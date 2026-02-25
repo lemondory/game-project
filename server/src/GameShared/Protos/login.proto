@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+option csharp_namespace = "GameShared.Proto";
+
+// Login packets
+
+message C2S_Login {
+  string username = 1;
+  string password = 2;
+}
+
+message S2C_LoginResult {
+  bool success = 1;
+  string message = 2;
+  int64 player_id = 3;
+  string player_name = 4;
+}

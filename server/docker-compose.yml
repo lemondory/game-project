@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # Auth Database - 전체 서버 공유 (계정 인증)
+  postgres-auth:
+    image: postgres:16-alpine
+    container_name: gameserver-auth-db
+    environment:
+      POSTGRES_DB: auth
+      POSTGRES_USER: gameserver
+      POSTGRES_PASSWORD: dev_password_123
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres-auth-data:/var/lib/postgresql/data
+      - ./db/init/auth:/docker-entrypoint-initdb.d
+    networks:
+      - gameserver-network
+
+  # Common Database - 전체 서버 공유 (서버 목록, 캐릭터 요약)
+  postgres-common:
+    image: postgres:16-alpine
+    container_name: gameserver-common-db
+    environment:
+      POSTGRES_DB: common
+      POSTGRES_USER: gameserver
+      POSTGRES_PASSWORD: dev_password_123
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-common-data:/var/lib/postgresql/data
+      - ./db/init/common:/docker-entrypoint-initdb.d
+    networks:
+      - gameserver-network
+
+  # Game Database - 월드 서버별 (게임 데이터)
+  postgres-game:
+    image: postgres:16-alpine
+    container_name: gameserver-game-db
+    environment:
+      POSTGRES_DB: game
+      POSTGRES_USER: gameserver
+      POSTGRES_PASSWORD: dev_password_123
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres-game-data:/var/lib/postgresql/data
+      - ./db/init/game:/docker-entrypoint-initdb.d
+    networks:
+      - gameserver-network
+
+  # pgAdmin (Optional - for database management)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: gameserver-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@gameserver.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "5050:80"
+    networks:
+      - gameserver-network
+    depends_on:
+      - postgres-auth
+      - postgres-common
+      - postgres-game
+
+volumes:
+  postgres-auth-data:
+  postgres-common-data:
+  postgres-game-data:
+
+networks:
+  gameserver-network:
+    driver: bridge

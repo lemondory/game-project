@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+option csharp_namespace = "GameShared.Proto";
+
+// Chat packets
+
+message C2S_Chat {
+  string message = 1;
+}
+
+message S2C_Chat {
+  string sender_name = 1;
+  string message = 2;
+}

@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+option csharp_namespace = "GameShared.Proto";
+
+// Common message types used across multiple packets
+
+message Vec3 {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+}
+
+enum EntityType {
+  ENTITY_TYPE_UNSPECIFIED = 0;
+  ENTITY_TYPE_PLAYER = 1;
+  ENTITY_TYPE_MONSTER = 2;
+  ENTITY_TYPE_NPC = 3;
+}
+
+message EntityInfo {
+  int64 entity_id = 1;
+  EntityType entity_type = 2;
+  string name = 3;
+  Vec3 position = 4;
+  int32 current_hp = 5;
+  int32 max_hp = 6;
+}

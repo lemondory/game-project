@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+import "common.proto";
+
+option csharp_namespace = "GameShared.Proto";
+
+// Movement packets
+
+message C2S_Move {
+  Vec3 destination = 1;
+}
+
+message S2C_Move {
+  int64 entity_id = 1;
+  Vec3 position = 2;
+  Vec3 destination = 3;
+}
+
+message S2C_Spawn {
+  EntityInfo entity = 1;
+}
+
+message S2C_Despawn {
+  int64 entity_id = 1;
+}

@@ -1,0 +1,81 @@
+# ── macOS ───────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Unity ───────────────────────────────────────────────────────────────────
+client/[Ll]ibrary/
+client/[Tt]emp/
+client/[Oo]bj/
+client/[Bb]uild/
+client/[Bb]uilds/
+client/[Ll]ogs/
+client/[Uu]ser[Ss]ettings/
+client/[Mm]emory[Cc]aptures/
+client/[Rr]ecordings/
+
+# Unity auto-generated project files (IDE에서 재생성됨)
+client/*.csproj
+client/*.sln
+client/*.slnx
+client/*.userprefs
+client/.vsconfig
+
+# ── .NET Server ──────────────────────────────────────────────────────────────
+server/**/[Bb]in/
+server/**/[Oo]bj/
+server/**/*.user
+server/logs/
+server/.vs/
+server/**/.idea/
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# ── 환경 변수 / 시크릿 ──────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── 로컬 전용 문서 (작업 기록 / 내부 메모) ──────────────────────────────────
+server/docs/
+server/guides/
+server/works/
+server/WORK_SUMMARY.md
+server/logs/
+
+# ── 초기 개발 산출물 (구버전 / 대체됨) ──────────────────────────────────────
+# 테스트 스크립트: 봇 시스템(dotnet run -- bot N)으로 대체됨
+server/test-connection.sh
+server/test-gamedata.csx
+server/test-multi-client.sh
+# Unity 패키지 초안: MessagePack 기반 구버전, 현재 client/Assets 코드로 대체됨
+server/unity-package/
+
+# ── Unity 서드파티 샘플 콘텐츠 (프로젝트에서 미사용) ─────────────────────────
+client/Assets/TextMesh Pro/Examples & Extras/
+client/Assets/TextMesh Pro/Examples & Extras.meta
+
+# ── 미사용 DLL (구버전 MessagePack 패키지 잔여물) ────────────────────────────
+client/Assets/Plugins/MessagePack.dll
+client/Assets/Plugins/MessagePack.dll.meta
+client/Assets/Plugins/MessagePack.Annotations.dll
+client/Assets/Plugins/MessagePack.Annotations.dll.meta
+client/Assets/Plugins/System.Collections.Immutable.dll
+client/Assets/Plugins/System.Collections.Immutable.dll.meta
+
+# ── 데이터 파일 임시/잠금 파일 ───────────────────────────────────────────────
+server/data/xlsx/~$*.xlsx
+server/data/xlsx/*.bak
+
+# ── 로컬 전용 문서 (서버 하위) ───────────────────────────────────────────────
+server/README.md
+
+# ── 기타 ─────────────────────────────────────────────────────────────────────
+*.log
+*.tmp

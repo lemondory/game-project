@@ -1,0 +1,4 @@
+﻿ItemId,Name,Rarity,Price,Description
+2001,Health Potion,Common,10,Restores 50 HP
+2002,Mana Potion,Common,15,Restores 30 MP
+2003,Magic Sword,Epic,1000,"ATK +50, Magic +20"

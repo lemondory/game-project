@@ -1,0 +1,35 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <!-- 의존성 DLL도 output에 복사 (PostBuild에서 Unity Plugins로 복사하기 위해) -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.33.5" />
+    <PackageReference Include="Grpc.Tools" Version="2.78.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="MessagePack" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Protobuf Include="Protos\**\*.proto" ProtoRoot="Protos" />
+  </ItemGroup>
+
+  <!-- Unity 클라이언트 Plugins 폴더에 DLL 자동 복사 -->
+  <Target Name="CopyToUnityPlugins" AfterTargets="Build">
+    <PropertyGroup>
+      <UnityPluginsDir>$(MSBuildProjectDirectory)/../../../client/Assets/Plugins</UnityPluginsDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(UnityPluginsDir)" Condition="!Exists('$(UnityPluginsDir)')" />
+    <Copy SourceFiles="$(OutputPath)GameShared.dll"        DestinationFolder="$(UnityPluginsDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(OutputPath)Google.Protobuf.dll"   DestinationFolder="$(UnityPluginsDir)" SkipUnchangedFiles="true" />
+    <Message Text="[PostBuild] Copied GameShared.dll + Google.Protobuf.dll → Unity Plugins" Importance="high" />
+  </Target>
+
+</Project>
