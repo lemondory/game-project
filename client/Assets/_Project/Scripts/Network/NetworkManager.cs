@@ -1,17 +1,24 @@
 using System;
 using System.Net.Sockets;
 using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 using Google.Protobuf;
 using GameShared.Enums;
-using GameShared.Proto;
 
 /// <summary>
 /// 서버와의 TCP 연결을 관리하는 싱글톤 매니저 (Protobuf 버전)
-/// 패킷 수신은 네트워크 스레드에서 이루어지며, 핸들러 호출은 메인 스레드 큐를 통해 Unity 안전하게 처리한다.
+///
+/// 스레딩 모델:
+///   - 네트워크 스레드: OnReceive → ProcessPackets → EnqueueMainThread 까지만 실행
+///   - 메인 스레드: Update()에서 큐를 drain하여 HandlePacket → 핸들러 → 이벤트 호출
+///   - 따라서 모든 이벤트 콜백은 메인 스레드에서 안전하게 Unity API 접근 가능
+///
+/// 핸들러 등록:
+///   [PacketHandler(PacketId.X)] 어트리뷰트가 붙은 메서드를 Awake 시 리플렉션으로 자동 등록.
+///   핸들러 구현은 Handlers/ 폴더의 partial class 파일들에 분산되어 있다.
 /// </summary>
-public class NetworkManager : MonoBehaviour
+public partial class NetworkManager : MonoBehaviour
 {
     // ── 싱글톤 ──────────────────────────────────────────────────────────────
 
@@ -34,14 +41,25 @@ public class NetworkManager : MonoBehaviour
         }
     }
 
+    // ── 설정 ─────────────────────────────────────────────────────────────────
+
+    private const int ReceiveBufferSize    = 8192;
+    private const int PacketBufferSize     = 65536;
+    private const int HeaderSize           = 4;       // [Size 2B][PacketId 2B]
+    private const int MaxPacketSize        = 65535;    // ushort.MaxValue
+    private const int MaxMainThreadQueue   = 1024;
+
     // ── 네트워크 ─────────────────────────────────────────────────────────────
 
-    private TcpClient _client;
-    private NetworkStream _stream;
+    private volatile TcpClient _client;
+    private volatile NetworkStream _stream;
 
-    // 수신 버퍼 (네트워크 스레드 전용)
-    private readonly byte[] _receiveBuffer = new byte[8192];
-    private readonly List<byte> _packetBuffer = new List<byte>();
+    // 수신 버퍼 (네트워크 스레드 전용 — lock 불필요)
+    private readonly byte[] _receiveBuffer = new byte[ReceiveBufferSize];
+
+    // 패킷 조립 버퍼 (네트워크 스레드 전용 — 오프셋 기반, GC 할당 없음)
+    private readonly byte[] _packetBuffer = new byte[PacketBufferSize];
+    private int _packetBufferLen;
 
     // 메인 스레드 큐 (_queueLock 으로 보호)
     private readonly Queue<Action> _mainThreadQueue = new Queue<Action>();
@@ -49,21 +67,12 @@ public class NetworkManager : MonoBehaviour
 
     // ── 상태 ─────────────────────────────────────────────────────────────────
 
-    public bool IsConnected => _client != null && _client.Connected;
+    public bool IsConnected => _client is { Connected: true };
 
-    // ── 이벤트 ───────────────────────────────────────────────────────────────
+    // ── 연결 이벤트 (코어에서 직접 발생) ────────────────────────────────────
 
     public event Action OnConnectedToServer;
     public event Action OnDisconnectedFromServer;
-
-    public event Action<S2C_EnterTownResult> OnEnterTownReceived;
-    public event Action<S2C_Spawn>           OnSpawnReceived;
-    public event Action<S2C_Despawn>         OnDespawnReceived;
-    public event Action<S2C_Move>            OnMoveReceived;
-    public event Action<S2C_Chat>            OnChatReceived;
-
-    /// <summary>Town 씬 로드 시 TownManager 가 읽어갈 입장 데이터</summary>
-    public S2C_EnterTownResult PendingEnterTownResult { get; private set; }
 
     // ── Unity Lifecycle ──────────────────────────────────────────────────────
 
@@ -127,34 +136,48 @@ public class NetworkManager : MonoBehaviour
 
     public void Disconnect()
     {
-        try { _stream?.Close(); } catch { }
-        try { _client?.Close(); } catch { }
+        var stream = _stream;
+        var client = _client;
         _stream = null;
         _client = null;
+
+        try { stream?.Close(); } catch { }
+        try { client?.Close(); } catch { }
+
+        // 네트워크 스레드에서 쌓인 stale 큐 제거
+        lock (_queueLock)
+            _mainThreadQueue.Clear();
+
+        _packetBufferLen = 0;
+
         EnqueueMainThread(() => OnDisconnectedFromServer?.Invoke());
         Debug.Log("[NetworkManager] Disconnected");
     }
 
-    // ── 수신 ─────────────────────────────────────────────────────────────────
+    // ── 수신 (네트워크 스레드) ───────────────────────────────────────────────
 
     private void OnReceive(IAsyncResult ar)
     {
         try
         {
-            int bytesRead = _stream.EndRead(ar);
-            if (bytesRead > 0)
-            {
-                for (int i = 0; i < bytesRead; i++)
-                    _packetBuffer.Add(_receiveBuffer[i]);
+            var stream = _stream;
+            if (stream == null) return;  // 이미 Disconnect 된 경우
 
-                ProcessPackets();
-                _stream.BeginRead(_receiveBuffer, 0, _receiveBuffer.Length, OnReceive, null);
-            }
-            else
+            int bytesRead = stream.EndRead(ar);
+            if (bytesRead <= 0)
             {
                 Debug.Log("[NetworkManager] Connection closed by server");
                 Disconnect();
+                return;
             }
+
+            AppendToPacketBuffer(bytesRead);
+            ProcessPackets();
+            stream.BeginRead(_receiveBuffer, 0, _receiveBuffer.Length, OnReceive, null);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Disconnect 후 콜백이 도착한 경우 — 정상 흐름
         }
         catch (Exception ex)
         {
@@ -164,37 +187,68 @@ public class NetworkManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 버퍼에서 완성된 패킷을 파싱해 메인 스레드 큐에 넣는다.
+    /// _receiveBuffer → _packetBuffer 로 수신 데이터를 복사한다.
+    /// Buffer.BlockCopy 를 사용하여 바이트 단위 루프보다 빠르다.
+    /// </summary>
+    private void AppendToPacketBuffer(int bytesRead)
+    {
+        if (_packetBufferLen + bytesRead > PacketBufferSize)
+        {
+            Debug.LogError("[NetworkManager] Packet buffer overflow, disconnecting");
+            Disconnect();
+            return;
+        }
+        Buffer.BlockCopy(_receiveBuffer, 0, _packetBuffer, _packetBufferLen, bytesRead);
+        _packetBufferLen += bytesRead;
+    }
+
+    /// <summary>
+    /// 패킷 버퍼에서 완성된 패킷을 파싱해 메인 스레드 큐에 넣는다.
+    /// 오프셋 기반이므로 ToArray() 할당이 발생하지 않는다.
     /// 헤더: [Size 2 bytes LE][PacketId 2 bytes LE]  Size 는 헤더+바디 합계.
     /// </summary>
     private void ProcessPackets()
     {
-        while (_packetBuffer.Count >= 4)
-        {
-            ushort size = BitConverter.ToUInt16(_packetBuffer.ToArray(), 0);
+        int offset = 0;
 
-            // 최소 크기 검증 — size < 4 이면 ushort 언더플로우 방지
-            if (size < 4)
+        while (offset + HeaderSize <= _packetBufferLen)
+        {
+            ushort size = BitConverter.ToUInt16(_packetBuffer, offset);
+
+            if (size < HeaderSize)
             {
                 Debug.LogError("[NetworkManager] Invalid packet size, disconnecting");
                 Disconnect();
                 return;
             }
 
-            if (_packetBuffer.Count < size)
-                break; // 아직 완성되지 않은 패킷
+            if (size > MaxPacketSize)
+            {
+                Debug.LogError($"[NetworkManager] Packet too large ({size} bytes), disconnecting");
+                Disconnect();
+                return;
+            }
 
-            ushort   packetIdValue = BitConverter.ToUInt16(_packetBuffer.ToArray(), 2);
+            if (offset + size > _packetBufferLen)
+                break;  // 아직 완성되지 않은 패킷
+
+            ushort   packetIdValue = BitConverter.ToUInt16(_packetBuffer, offset + 2);
             PacketId packetId      = (PacketId)packetIdValue;
 
-            int    dataSize = size - 4;
+            int    dataSize = size - HeaderSize;
             byte[] data     = new byte[dataSize];
-            _packetBuffer.CopyTo(4, data, 0, dataSize);
-            _packetBuffer.RemoveRange(0, size);
+            Buffer.BlockCopy(_packetBuffer, offset + HeaderSize, data, 0, dataSize);
 
-            byte[] dataCopy = (byte[])data.Clone();
-            EnqueueMainThread(() => HandlePacket(packetId, dataCopy));
+            EnqueueMainThread(() => HandlePacket(packetId, data));
+
+            offset += size;
         }
+
+        // 남은 미완성 데이터를 버퍼 앞으로 이동
+        int remaining = _packetBufferLen - offset;
+        if (remaining > 0)
+            Buffer.BlockCopy(_packetBuffer, offset, _packetBuffer, 0, remaining);
+        _packetBufferLen = remaining;
     }
 
     // ── 송신 ─────────────────────────────────────────────────────────────────
@@ -205,7 +259,8 @@ public class NetworkManager : MonoBehaviour
     /// </summary>
     public void Send(PacketId packetId, IMessage packet)
     {
-        if (!IsConnected)
+        var stream = _stream;
+        if (stream == null)
         {
             Debug.LogError("[NetworkManager] Not connected");
             return;
@@ -214,9 +269,9 @@ public class NetworkManager : MonoBehaviour
         try
         {
             byte[] data      = packet.ToByteArray();
-            int    totalSize = 4 + data.Length;
+            int    totalSize = HeaderSize + data.Length;
 
-            if (totalSize > ushort.MaxValue)
+            if (totalSize > MaxPacketSize)
             {
                 Debug.LogError($"[NetworkManager] Packet too large ({totalSize} bytes), dropping");
                 return;
@@ -225,9 +280,9 @@ public class NetworkManager : MonoBehaviour
             byte[] buf = new byte[totalSize];
             BitConverter.GetBytes((ushort)totalSize).CopyTo(buf, 0);
             BitConverter.GetBytes((ushort)packetId).CopyTo(buf, 2);
-            data.CopyTo(buf, 4);
+            Buffer.BlockCopy(data, 0, buf, HeaderSize, data.Length);
 
-            _stream.Write(buf, 0, buf.Length);
+            stream.Write(buf, 0, buf.Length);
         }
         catch (Exception ex)
         {
@@ -235,18 +290,41 @@ public class NetworkManager : MonoBehaviour
         }
     }
 
-    // ── 패킷 핸들러 등록 ──────────────────────────────────────────────────────
+    // ── 핸들러 등록 (어트리뷰트 기반 자동 등록) ─────────────────────────────
 
     private readonly Dictionary<PacketId, Action<byte[]>> _handlers = new Dictionary<PacketId, Action<byte[]>>();
 
+    /// <summary>
+    /// [PacketHandler] 어트리뷰트가 붙은 모든 메서드를 탐색하여 _handlers 에 등록한다.
+    /// Awake() 시 한 번만 호출되며, 이후 패킷 디스패치는 Dictionary O(1) 조회만 사용한다.
+    /// </summary>
     private void RegisterHandlers()
     {
-        _handlers[PacketId.S2C_LoginResult]     = OnLoginResult;
-        _handlers[PacketId.S2C_EnterTownResult] = OnEnterTownResult;
-        _handlers[PacketId.S2C_Spawn]           = OnSpawn;
-        _handlers[PacketId.S2C_Despawn]         = OnDespawn;
-        _handlers[PacketId.S2C_Move]            = OnMove;
-        _handlers[PacketId.S2C_Chat]            = OnChat;
+        var methods = GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+
+        foreach (var method in methods)
+        {
+            var attr = method.GetCustomAttribute<PacketHandlerAttribute>();
+            if (attr == null) continue;
+
+            if (_handlers.ContainsKey(attr.PacketId))
+            {
+                Debug.LogError($"[NetworkManager] Duplicate handler for {attr.PacketId}: {method.Name}");
+                continue;
+            }
+
+            try
+            {
+                var handler = (Action<byte[]>)Delegate.CreateDelegate(typeof(Action<byte[]>), this, method);
+                _handlers[attr.PacketId] = handler;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[NetworkManager] Failed to register {method.Name} for {attr.PacketId}: {ex.Message}");
+            }
+        }
+
+        Debug.Log($"[NetworkManager] Registered {_handlers.Count} packet handlers");
     }
 
     private void HandlePacket(PacketId packetId, byte[] data)
@@ -263,57 +341,8 @@ public class NetworkManager : MonoBehaviour
         }
         catch (Exception ex)
         {
-            // Protobuf 파싱 실패 또는 핸들러 내 예외 — 크래시 방지
             Debug.LogError($"[NetworkManager] Handler error for {packetId}: {ex.Message}");
         }
-    }
-
-    // ── 패킷 핸들러 구현 ──────────────────────────────────────────────────────
-
-    private void OnLoginResult(byte[] data)
-    {
-        var packet = S2C_LoginResult.Parser.ParseFrom(data);
-        Debug.Log($"[NetworkManager] Login: success={packet.Success}, msg={packet.Message}");
-        if (packet.Success)
-            Send(PacketId.C2S_EnterTown, new C2S_EnterTown());
-    }
-
-    private void OnEnterTownResult(byte[] data)
-    {
-        var packet = S2C_EnterTownResult.Parser.ParseFrom(data);
-        Debug.Log($"[NetworkManager] EnterTown: success={packet.Success}, entityId={packet.EntityId}");
-        if (packet.Success)
-        {
-            PendingEnterTownResult = packet;
-            SceneManager.LoadScene("Town");
-        }
-    }
-
-    private void OnSpawn(byte[] data)
-    {
-        var packet = S2C_Spawn.Parser.ParseFrom(data);
-        Debug.Log($"[NetworkManager] Spawn: EntityId={packet.Entity?.EntityId}, Name={packet.Entity?.Name}");
-        OnSpawnReceived?.Invoke(packet);
-    }
-
-    private void OnDespawn(byte[] data)
-    {
-        var packet = S2C_Despawn.Parser.ParseFrom(data);
-        Debug.Log($"[NetworkManager] Despawn: EntityId={packet.EntityId}");
-        OnDespawnReceived?.Invoke(packet);
-    }
-
-    private void OnMove(byte[] data)
-    {
-        var packet = S2C_Move.Parser.ParseFrom(data);
-        OnMoveReceived?.Invoke(packet);
-    }
-
-    private void OnChat(byte[] data)
-    {
-        var packet = S2C_Chat.Parser.ParseFrom(data);
-        Debug.Log($"[NetworkManager] Chat: {packet.SenderName}: {packet.Message}");
-        OnChatReceived?.Invoke(packet);
     }
 
     // ── 내부 헬퍼 ────────────────────────────────────────────────────────────
@@ -321,6 +350,14 @@ public class NetworkManager : MonoBehaviour
     private void EnqueueMainThread(Action action)
     {
         lock (_queueLock)
+        {
+            if (_mainThreadQueue.Count >= MaxMainThreadQueue)
+            {
+                Debug.LogError("[NetworkManager] Main thread queue overflow, disconnecting");
+                _mainThreadQueue.Clear();
+                return;
+            }
             _mainThreadQueue.Enqueue(action);
+        }
     }
 }

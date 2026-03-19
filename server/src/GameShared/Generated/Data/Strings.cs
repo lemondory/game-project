@@ -30,7 +30,7 @@ public partial class Strings
 /// Auto-generated table class for Strings
 /// </summary>
 [MessagePackObject]
-public partial class StringsTable
+public partial class StringsTable : GameShared.Data.IDataTable
 {
     [Key(0)]
     public Dictionary<int, Strings> Data { get; set; } = new();

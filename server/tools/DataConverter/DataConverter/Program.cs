@@ -249,7 +249,7 @@ class DataConverter
 
                     // Serialize to MessagePack
                     var bytesPath = Path.Combine(options.OutputBytesDirectory, $"{schema.TableName}.bytes");
-                    _serializer.SerializeToMessagePack(schema, bytesPath, enumNames);
+                    _serializer.SerializeToMessagePack(schema, bytesPath, enumNames, enumSchemas);
                     var bytesSize = new FileInfo(bytesPath).Length;
                     Console.WriteLine($"  ✓ Generated {schema.TableName}.bytes ({bytesSize} bytes)");
 

@@ -1,0 +1,4 @@
+﻿DungeonId,Name,Description,MinLevel,MaxPlayers,MonsterIds
+1,Slime Forest,슬라임이 가득한 숲 — 초보자 던전,1,4,"1;1;1;2;2;0;0;0;0;0"
+2,Goblin Cave,고블린의 소굴 — 중급 던전,5,4,"2;2;2;3;3;0;0;0;0;0"
+3,Orc Fortress,오크 요새 — 고급 던전,10,4,"3;3;3;3;4;0;0;0;0;0"

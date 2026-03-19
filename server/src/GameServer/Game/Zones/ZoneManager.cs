@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Linq;
+using GameShared.Data;
 using GameShared.Enums;
 using Serilog;
 
@@ -74,22 +76,37 @@ public class ZoneManager
 
     private void SpawnMonstersForDungeon(DungeonZone dungeon, int dungeonId)
     {
-        // Spawn 3-5 monsters around the dungeon
-        var random = new Random();
-        int monsterCount = random.Next(3, 6);
-
-        for (int i = 0; i < monsterCount; i++)
+        var dungeonData = GameDataManager.DungeonData.GetById(dungeonId);
+        if (dungeonData == null)
         {
-            var position = new GameShared.Utils.Vector3(
-                random.Next(-10, 11),
-                0,
-                random.Next(-10, 11)
-            );
-
-            dungeon.SpawnMonster(1, position); // MonsterId = 1 for now
+            Log.Warning("SpawnMonstersForDungeon: DungeonId={DungeonId} not found in data, skipping spawn", dungeonId);
+            return;
         }
 
-        Log.Information("Spawned {Count} monsters in dungeon {ZoneId}", monsterCount, dungeon.ZoneId);
+        var random = new Random();
+        var monsterIds = dungeonData.MonsterIds.Where(id => id > 0).ToArray();
+
+        if (monsterIds.Length == 0)
+        {
+            Log.Warning("SpawnMonstersForDungeon: DungeonId={DungeonId} has no monsters defined", dungeonId);
+            return;
+        }
+
+        for (int i = 0; i < monsterIds.Length; i++)
+        {
+            // 몬스터를 격자 형태로 배치 (최대 5열)
+            int col = i % 5;
+            int row = i / 5;
+            var position = new GameShared.Utils.Vector3(
+                (col - 2) * 4f + (float)(random.NextDouble() * 2 - 1),
+                0,
+                row * 5f + 5f + (float)(random.NextDouble() * 2 - 1)
+            );
+            dungeon.SpawnMonster(monsterIds[i], position);
+        }
+
+        Log.Information("Spawned {Count} monsters in dungeon {ZoneId} (DungeonId={DungeonId}: {Name})",
+            monsterIds.Length, dungeon.ZoneId, dungeonId, dungeonData.Name);
     }
 
     /// <summary>

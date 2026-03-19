@@ -21,11 +21,35 @@ class Program
             .WriteTo.Console()
             .CreateLogger();
 
-        // 봇 모드: dotnet run -- bot <count>
+        // 봇 모드:
+        //   dotnet run -- bot <count>                   → 기본 계정 목록에서 N개
+        //   dotnet run -- bot <user1> <user2> ...       → 지정한 계정으로 실행
         if (args.Length >= 1 && args[0].Equals("bot", StringComparison.OrdinalIgnoreCase))
         {
-            int count = args.Length >= 2 && int.TryParse(args[1], out int n) ? n : 1;
-            await RunBotsAsync(count);
+            string[] botAccounts;
+            if (args.Length >= 2 && int.TryParse(args[1], out int n))
+            {
+                botAccounts = BuildBotAccounts(n);
+            }
+            else if (args.Length >= 2)
+            {
+                // bot <user1> <user2> ... 형태
+                botAccounts = args[1..];
+            }
+            else
+            {
+                botAccounts = BuildBotAccounts(1);
+            }
+            await RunBotsAsync(botAccounts);
+            return;
+        }
+
+        // 던전 테스트 모드: dotnet run -- dungeon [dungeonId] [username]
+        if (args.Length >= 1 && args[0].Equals("dungeon", StringComparison.OrdinalIgnoreCase))
+        {
+            int dungeonId  = args.Length >= 2 && int.TryParse(args[1], out int d) ? d : 1;
+            string account = args.Length >= 3 ? args[2] : "testuser1";
+            await RunDungeonBotAsync(dungeonId, account);
             return;
         }
 
@@ -296,30 +320,52 @@ class Program
 
     // ── 봇 모드 ─────────────────────────────────────────────────────────────
 
-    // DB에 있는 테스트 계정 목록 (필요시 추가)
-    static readonly string[] BotAccounts = ["testuser1", "testuser2", "alice", "bob"];
-
-    static async Task RunBotsAsync(int count)
+    // DB에 있는 테스트 계정 목록
+    // 기본 4개 + 성능 테스트용 bot01~bot20 (create_test_bots.sql 실행 후 사용 가능)
+    static string[] BuildBotAccounts(int count)
     {
-        int botCount = Math.Min(count, BotAccounts.Length);
-        Log.Information("=== Bot Runner: {Count} bots ===", botCount);
+        var list = new List<string> { "testuser1", "testuser2", "alice", "bob" };
+        for (int i = 1; i <= 20; i++)
+            list.Add($"bot{i:D2}");
+        return [.. list.Take(count)];
+    }
+
+    static async Task RunBotsAsync(string[] accounts)
+    {
+        Log.Information("=== Bot Runner: {Count} bots (moveRange=±80f) ===", accounts.Length);
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
-        // 봇을 0.5초 간격으로 순차 접속 (서버 부하 분산)
+        // 봇을 0.3초 간격으로 순차 접속 (서버 부하 분산)
+        // moveRange=80f : ViewRadius(50f) 밖으로도 이동해 AOI 필터 효과 확인
         var tasks = new List<Task>();
-        for (int i = 0; i < botCount; i++)
+        for (int i = 0; i < accounts.Length; i++)
         {
-            var bot = new Bot(BotAccounts[i]);
+            var bot = new Bot(accounts[i], moveRange: 80f);
             tasks.Add(bot.RunAsync(cts.Token));
-            if (i < botCount - 1)
-                await Task.Delay(500, cts.Token);
+            if (i < accounts.Length - 1)
+                await Task.Delay(300, cts.Token);
         }
 
-        Log.Information("All bots running. Press Ctrl+C to stop.");
+        Log.Information("All {Count} bots running. Press Ctrl+C to stop.", accounts.Length);
         await Task.WhenAll(tasks);
         Log.Information("All bots stopped.");
+        Log.CloseAndFlush();
+    }
+
+    static async Task RunDungeonBotAsync(int dungeonId, string username)
+    {
+        Log.Information("=== Dungeon Bot: account={User}, dungeonId={Id} ===", username, dungeonId);
+        Log.Information("Ctrl+C 로 종료");
+
+        using var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+
+        var bot = new DungeonBot(username, password: "test", dungeonId: dungeonId);
+        await bot.RunAsync(cts.Token);
+
+        Log.Information("Dungeon bot stopped.");
         Log.CloseAndFlush();
     }
 }

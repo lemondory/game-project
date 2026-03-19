@@ -78,7 +78,7 @@ public class MonsterAISystem : AEntitySetSystem<float>
                 );
 
                 entity.Set(new DestinationComponent(wanderTarget));
-                entity.Set(new VelocityComponent(1f, Vector3.Zero)); // Slow wander
+                entity.Set(new VelocityComponent(ai.ChaseSpeed * 0.4f, Vector3.Zero)); // 배회는 추격속도의 40%
 
                 ai.StateTime = 0f;
             }
@@ -140,7 +140,7 @@ public class MonsterAISystem : AEntitySetSystem<float>
         if (ai.StateTime >= ChaseUpdateTime)
         {
             entity.Set(new DestinationComponent(targetPos.Position));
-            entity.Set(new VelocityComponent(3f, Vector3.Zero)); // Chase speed
+            entity.Set(new VelocityComponent(ai.ChaseSpeed, Vector3.Zero)); // MonsterData.MoveSpeed
 
             ai.StateTime = 0f;
         }

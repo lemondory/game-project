@@ -5,6 +5,7 @@ public enum PacketId : ushort
     // Login
     C2S_Login = 1000,
     S2C_LoginResult = 1001,
+    S2C_ForceLogout = 1002,
 
     // Zone Entry
     C2S_EnterTown = 1100,
@@ -28,4 +29,6 @@ public enum PacketId : ushort
     S2C_Attack = 4001,
     S2C_Damage = 4002,
     S2C_Death = 4003,
+    S2C_RewardResult = 4004,
+    S2C_LevelUp = 4005,
 }

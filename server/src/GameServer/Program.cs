@@ -8,7 +8,7 @@ namespace GameServer;
 
 class Program
 {
-    static void Main(string[] args)
+    static async Task Main(string[] args)
     {
         // Initialize Serilog
         Log.Logger = new LoggerConfiguration()
@@ -25,13 +25,10 @@ class Program
             try
             {
                 Log.Information("Loading game data...");
-                string dataPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../../../../data/bytes");
+                string dataPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../../../../../data/bytes");
                 if (Directory.Exists(dataPath))
                 {
                     GameDataManager.Instance.Initialize(dataPath);
-
-                    // Test data access
-                    Log.Information("Testing data access...");
                     Log.Information("MonsterData count: {Count}", GameDataManager.MonsterData.Count);
                     foreach (var monster in GameDataManager.MonsterData.GetAll())
                     {
@@ -41,7 +38,8 @@ class Program
                 }
                 else
                 {
-                    Log.Warning("Data directory not found, skipping data loading. Server will run without game data.");
+                    Log.Warning("Data directory not found: {Path}", dataPath);
+                    Log.Warning("Game data not loaded. Monster/character stats will use fallback values.");
                 }
             }
             catch (Exception ex)
@@ -54,6 +52,14 @@ class Program
             var dbConfig = DatabaseConfig.FromEnvironment();
             DatabaseManager.Instance.Initialize(dbConfig);
 
+            // DB 하트비트 체크 — 하나라도 연결 실패 시 서버 시작 중단 (fail fast)
+            bool dbHealthy = await DatabaseManager.Instance.CheckHealthAsync();
+            if (!dbHealthy)
+            {
+                Log.Fatal("데이터베이스에 연결할 수 없어 서버를 시작할 수 없습니다. DB 상태를 확인하세요.");
+                return;
+            }
+
             // Initialize Zone Manager and Town Zone
             Log.Information("Initializing zones...");
             ZoneManager.Instance.Initialize();
@@ -64,7 +70,7 @@ class Program
 
             server.Start();
 
-            Log.Information("Server is running. Press Ctrl+C to stop.");
+            Log.Information("Server is running on port {Port}. Press Ctrl+C to stop.", port);
 
             // Main game loop
             bool isRunning = true;
@@ -77,7 +83,6 @@ class Program
 
             while (isRunning)
             {
-                // Process packets from queue
                 int processedCount = 0;
                 while (server.PacketQueue.TryDequeue(out var message))
                 {
@@ -89,18 +94,14 @@ class Program
                 }
 
                 if (processedCount > 0)
-                {
                     Log.Debug("Processed {Count} packets", processedCount);
-                }
 
-                // Sleep to prevent busy waiting
                 Thread.Sleep(10);
             }
 
             Log.Information("Shutting down server...");
             server.Stop();
 
-            // Shutdown zones
             Log.Information("Shutting down zones...");
             ZoneManager.Instance.Shutdown();
         }

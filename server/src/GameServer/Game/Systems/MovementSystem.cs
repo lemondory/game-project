@@ -21,6 +21,12 @@ public class MovementSystem : AEntitySetSystem<float>
 
     protected override void Update(float deltaTime, in Entity entity)
     {
+        // Guard: DefaultEcs swaps removed entities into processed slots during iteration.
+        // An entity that had its components removed earlier in the same frame may reappear
+        // at the end of the span — skip it to prevent IndexOutOfRangeException.
+        if (!entity.Has<VelocityComponent>() || !entity.Has<DestinationComponent>())
+            return;
+
         ref var position = ref entity.Get<PositionComponent>();
         ref var velocity = ref entity.Get<VelocityComponent>();
         ref var destination = ref entity.Get<DestinationComponent>();

@@ -39,7 +39,7 @@ public partial class SkillData
 /// Auto-generated table class for SkillData
 /// </summary>
 [MessagePackObject]
-public partial class SkillDataTable
+public partial class SkillDataTable : GameShared.Data.IDataTable
 {
     [Key(0)]
     public Dictionary<int, SkillData> Data { get; set; } = new();

@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -13,27 +14,100 @@ namespace DataConverter.Generators;
 /// </summary>
 public class DataSerializer
 {
-    public void SerializeToMessagePack(TableSchema schema, string outputPath, HashSet<string> enumNames)
+    /// <summary>
+    /// Serialize table data to MessagePack binary format compatible with
+    /// [MessagePackObject][Key(int)] generated C# classes.
+    ///
+    /// Output format:
+    ///   TableClass (array[1])
+    ///     └─ [Key(0)] Data dict (map{ primaryKey → DataClass })
+    ///          └─ DataClass (array[n]) — each element at index = Key(n)
+    /// </summary>
+    public void SerializeToMessagePack(TableSchema schema, string outputPath,
+        HashSet<string> enumNames, List<EnumSchema> enumSchemas)
     {
-        // Build dictionary with primary key
-        var dictionary = new Dictionary<object, Dictionary<string, object?>>();
-
-        foreach (var row in schema.Rows)
+        // Build enum lookup: enumTypeName → (valueName → intValue)
+        var enumLookup = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var enumSchema in enumSchemas)
         {
-            var primaryKeyValue = row[schema.PrimaryKey!.Name];
-            if (primaryKeyValue == null)
-                continue;
-
-            // Process row data
-            var processedRow = ProcessRow(row, schema, enumNames);
-
-            dictionary[primaryKeyValue] = processedRow;
+            var values = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var ev in enumSchema.Values)
+                values[ev.Name] = ev.Value;
+            enumLookup[enumSchema.EnumName] = values;
         }
 
-        // Serialize to MessagePack
-        var bytes = MessagePackSerializer.Serialize(dictionary, MessagePackSerializerOptions.Standard);
+        // Build ordered column list — must match CodeGenerator's Key(n) assignment:
+        //   regularColumns first (Key 0, 1, ...), then arrayBaseNames (Key m, m+1, ...)
+        var regularColumns = schema.Columns
+            .Where(c => !c.IsArray && !c.IsIgnored)
+            .ToList();
+        var arrayBaseNames = schema.ArrayColumns
+            .Where(kvp => kvp.Value.All(c => !c.IsIgnored))
+            .Select(kvp => kvp.Key)
+            .ToList();
+        int totalKeys = regularColumns.Count + arrayBaseNames.Count;
 
-        File.WriteAllBytes(outputPath, bytes);
+        // Build (primaryKey, valueArray) pairs in schema row order
+        var rows = new List<(object pk, object?[] values)>();
+        foreach (var row in schema.Rows)
+        {
+            var pkValue = row[schema.PrimaryKey!.Name];
+            if (pkValue == null)
+                continue;
+
+            var arr = new object?[totalKeys];
+            int idx = 0;
+
+            // Regular columns
+            foreach (var col in regularColumns)
+            {
+                var raw = row.ContainsKey(col.Name) ? row[col.Name] : null;
+                arr[idx++] = ConvertValue(raw, col, enumNames, enumLookup);
+            }
+
+            // Array columns
+            foreach (var baseName in arrayBaseNames)
+            {
+                var arrayCols = schema.ArrayColumns[baseName];
+                var elems = new object?[arrayCols.Count];
+                for (int i = 0; i < arrayCols.Count; i++)
+                {
+                    var arrayCol = arrayCols[i];
+                    var key = $"{arrayCol.Name}_{arrayCol.ArrayIndex}";
+                    var raw = row.ContainsKey(key) ? row[key] : null;
+                    elems[i] = ConvertValue(raw, arrayCol, enumNames, enumLookup);
+                }
+                arr[idx++] = elems;
+            }
+
+            rows.Add((pkValue, arr));
+        }
+
+        // Write the MessagePack binary
+        //
+        // Conceptual structure (using MessagePackObject + Key(int)):
+        //   [                       ← TableClass array (1 element)
+        //     {                     ← Data = Dictionary<pk, DataClass>
+        //       1: [v0, v1, ...],   ← DataClass array (totalKeys elements)
+        //       2: [v0, v1, ...],
+        //     }
+        //   ]
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new MessagePackWriter(buffer);
+
+        writer.WriteArrayHeader(1);          // TableClass has exactly Key(0) = Data
+        writer.WriteMapHeader(rows.Count);
+
+        foreach (var (pk, values) in rows)
+        {
+            WriteValue(ref writer, pk);      // primary key (int, long, or string)
+            writer.WriteArrayHeader(totalKeys);
+            foreach (var val in values)
+                WriteValue(ref writer, val);
+        }
+
+        writer.Flush();
+        File.WriteAllBytes(outputPath, buffer.WrittenMemory.ToArray());
     }
 
     public void SerializeToCsv(TableSchema schema, string outputPath)
@@ -87,70 +161,95 @@ public class DataSerializer
         File.WriteAllText(outputPath, sb.ToString(), Encoding.UTF8);
     }
 
-    private Dictionary<string, object?> ProcessRow(Dictionary<string, object?> row, TableSchema schema, HashSet<string> enumNames)
-    {
-        var processed = new Dictionary<string, object?>();
-
-        // Process regular columns (skip ignored columns)
-        foreach (var column in schema.Columns.Where(c => !c.IsArray && !c.IsIgnored))
-        {
-            var value = row.ContainsKey(column.Name) ? row[column.Name] : null;
-            processed[column.Name] = ConvertValue(value, column, enumNames);
-        }
-
-        // Process array columns (skip ignored arrays)
-        foreach (var arrayBaseName in schema.ArrayColumns.Keys)
-        {
-            var arrayColumns = schema.ArrayColumns[arrayBaseName];
-
-            // Skip if any array column is ignored
-            if (arrayColumns.Any(c => c.IsIgnored))
-                continue;
-
-            var arrayValues = new List<object?>();
-
-            foreach (var arrayCol in arrayColumns)
-            {
-                var key = $"{arrayCol.Name}_{arrayCol.ArrayIndex}";
-                var value = row.ContainsKey(key) ? row[key] : null;
-                arrayValues.Add(ConvertValue(value, arrayCol, enumNames));
-            }
-
-            processed[arrayBaseName] = arrayValues.ToArray();
-        }
-
-        return processed;
-    }
-
-    private object? ConvertValue(object? value, ColumnInfo column, HashSet<string> enumNames)
+    /// <summary>
+    /// Convert a raw Excel value to its correct runtime type for serialization.
+    /// </summary>
+    private object? ConvertValue(object? value, ColumnInfo column,
+        HashSet<string> enumNames, Dictionary<string, Dictionary<string, int>> enumLookup)
     {
         if (value == null)
             return null;
 
-        // Convert fixed-point values (use double for maximum precision)
+        // fixed-point: double → int (raw value * 10000)
         if (column.TypeName == "fixed")
         {
-            double doubleValue = value switch
+            double d = value switch
             {
-                double d => d,
+                double dv => dv,
                 float f => f,
                 int i => i,
                 long l => l,
                 _ => double.Parse(value.ToString()!)
             };
-
-            // Convert to Fixed32 raw value (int) with proper rounding
-            return (int)Math.Round(doubleValue * 10000);
+            return (int)Math.Round(d * 10000);
         }
 
-        // Enum values - convert string to int
-        if (enumNames.Contains(column.TypeName) && value is string)
+        // Enum: string name → int value
+        if (enumNames.Contains(column.TypeName) && value is string enumStr)
         {
-            // For now, store as string - will be resolved during C# compilation
-            return value;
+            if (enumLookup.TryGetValue(column.TypeName, out var evMap) &&
+                evMap.TryGetValue(enumStr, out int enumInt))
+                return enumInt;
+
+            // Fallback: try parsing as int directly
+            if (int.TryParse(enumStr, out int parsed))
+                return parsed;
+
+            return 0;
         }
 
         return value;
+    }
+
+    /// <summary>
+    /// Write a single value to the MessagePack stream.
+    /// Handles all primitive types produced by ExcelParser + ConvertValue.
+    /// </summary>
+    private static void WriteValue(ref MessagePackWriter writer, object? value)
+    {
+        switch (value)
+        {
+            case null:
+                writer.WriteNil();
+                break;
+            case bool b:
+                writer.Write(b);
+                break;
+            case byte bv:
+                writer.Write(bv);
+                break;
+            case short s:
+                writer.Write(s);
+                break;
+            case int i:
+                writer.Write(i);
+                break;
+            case long l:
+                writer.Write(l);
+                break;
+            case float f:
+                writer.Write(f);
+                break;
+            case double d:
+                writer.Write(d);
+                break;
+            case decimal dec:
+                writer.Write((double)dec);
+                break;
+            case string str:
+                writer.Write(str);
+                break;
+            case object?[] arr:
+                writer.WriteArrayHeader(arr.Length);
+                foreach (var item in arr)
+                    WriteValue(ref writer, item);
+                break;
+            default:
+                // Fallback: convert to int (handles boxed numeric edge cases)
+                try { writer.Write(Convert.ToInt32(value)); }
+                catch { writer.WriteNil(); }
+                break;
+        }
     }
 
     private string FormatCsvValue(object? value)

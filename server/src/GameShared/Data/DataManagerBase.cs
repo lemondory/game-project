@@ -82,7 +82,7 @@ public abstract class DataManagerBase
     /// <summary>
     /// Load a specific table from file
     /// </summary>
-    protected T LoadTable<T>(string fileName) where T : class
+    protected T LoadTable<T>(string fileName) where T : class, IDataTable
     {
         var filePath = Path.Combine(DataPath, fileName);
 
@@ -94,27 +94,9 @@ public abstract class DataManagerBase
         var bytes = File.ReadAllBytes(filePath);
         var table = MessagePackSerializer.Deserialize<T>(bytes, MessagePackSerializerOptions.Standard);
 
-        // Auto-build indexes if BuildIndexes method exists
-        var buildIndexesMethod = table.GetType().GetMethod("BuildIndexes");
-        if (buildIndexesMethod != null)
-        {
-            buildIndexesMethod.Invoke(table, null);
-        }
-
-        Console.WriteLine($"  ✓ Loaded {fileName} ({bytes.Length} bytes, {GetTableCount(table)} records)");
+        Console.WriteLine($"  ✓ Loaded {fileName} ({bytes.Length} bytes, {table.Count} records)");
 
         return table;
-    }
-
-    private int GetTableCount(object table)
-    {
-        // Try to get Count property via reflection
-        var countProperty = table.GetType().GetProperty("Count");
-        if (countProperty != null)
-        {
-            return (int)(countProperty.GetValue(table) ?? 0);
-        }
-        return 0;
     }
 
     /// <summary>
@@ -123,9 +105,6 @@ public abstract class DataManagerBase
     protected virtual void LoadAllTables()
     {
         // Override in partial class to load specific tables
-        // Example:
-        // Monsters = LoadTable<MonsterDataTable>("MonsterData.bytes");
-        // Items = LoadTable<ItemDataTable>("ItemData.bytes");
     }
 
     /// <summary>

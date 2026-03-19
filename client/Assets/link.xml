@@ -1,0 +1,9 @@
+<linker>
+  <!--
+    IL2CPP 빌드 시 링커가 리플렉션으로만 접근하는 메서드를 제거하는 것을 방지한다.
+    [PacketHandler] 어트리뷰트로 자동 등록되는 핸들러 메서드가 여기에 해당한다.
+  -->
+  <assembly fullname="Assembly-CSharp">
+    <type fullname="NetworkManager" preserve="all"/>
+  </assembly>
+</linker>

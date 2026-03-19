@@ -1,0 +1,4 @@
+﻿ObjectId,ZoneId,ObjectType,ReferenceId,PosX,PosY,PosZ,PrefabKey,Description
+1,1,DungeonPortal,1,10,0,5,Portal/DungeonPortal_Green,슬라임 숲 던전 포탈
+2,1,DungeonPortal,2,-10,0,5,Portal/DungeonPortal_Blue,고블린 동굴 던전 포탈
+3,1,DungeonPortal,3,0,0,15,Portal/DungeonPortal_Red,오크 요새 던전 포탈

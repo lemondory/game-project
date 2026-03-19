@@ -22,14 +22,17 @@ public class Bot
 
     private long _entityId;
     private bool _inTown;
+    private volatile bool _isKicked;
     private readonly Random _rng = new();
+    private readonly float  _moveRange; // 이동 범위 ±값 (기본 8f)
 
     public string Name => _username;
 
-    public Bot(string username, string password = "test")
+    public Bot(string username, string password = "test", float moveRange = 8f)
     {
-        _username = username;
-        _password = password;
+        _username  = username;
+        _password  = password;
+        _moveRange = moveRange;
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -59,13 +62,13 @@ public class Bot
 
             // 행동 루프: 이동 + 채팅
             int chatTick = 0;
-            while (!ct.IsCancellationRequested && (_client?.Connected ?? false))
+            while (!ct.IsCancellationRequested && !_isKicked && (_client?.Connected ?? false))
             {
                 await Task.Delay(2000 + _rng.Next(1000), ct);
 
-                // 랜덤 위치로 이동 (-8 ~ +8 범위)
-                float x = (float)(_rng.NextDouble() * 16 - 8);
-                float z = (float)(_rng.NextDouble() * 16 - 8);
+                // 랜덤 위치로 이동 (-moveRange ~ +moveRange 범위)
+                float x = (float)(_rng.NextDouble() * _moveRange * 2 - _moveRange);
+                float z = (float)(_rng.NextDouble() * _moveRange * 2 - _moveRange);
                 Send(PacketId.C2S_Move, new C2S_Move
                 {
                     Destination = new Vec3 { X = x, Y = 0, Z = z }
@@ -151,6 +154,13 @@ public class Bot
                     }
                     break;
 
+                case PacketId.S2C_ForceLogout:
+                    var kicked = S2C_ForceLogout.Parser.ParseFrom(data);
+                    Log.Warning("[Bot:{Name}] 강제 로그아웃: {Msg}", _username, kicked.Message);
+                    _isKicked = true;
+                    try { _stream?.Close(); } catch { }
+                    break;
+
                 case PacketId.S2C_EnterTownResult:
                     var town = S2C_EnterTownResult.Parser.ParseFrom(data);
                     if (town.Success)
@@ -180,7 +190,7 @@ public class Bot
 
     private void Send(PacketId packetId, IMessage packet)
     {
-        if (_stream == null) return;
+        if (_stream == null || _isKicked) return;
         try
         {
             byte[] data = packet.ToByteArray();

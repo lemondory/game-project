@@ -1,6 +1,10 @@
+using System.Collections.Concurrent;
+using System.Linq;
 using GameServer.Database;
 using GameServer.Game.Zones;
+using GameShared.Data;
 using GameShared.Enums;
+using GameShared.Generated.Enums;
 using GameShared.Proto;
 using Google.Protobuf;
 using Serilog;
@@ -18,6 +22,9 @@ public class PacketHandler
     private readonly Dictionary<long, long> _sessionToEntityId = new();
     private readonly Dictionary<long, int>  _sessionToZoneId   = new();
 
+    // AccountId → 활성 세션 (중복 로그인 감지용, 멀티스레드 접근 가능)
+    private readonly ConcurrentDictionary<long, ISession> _loggedInSessions = new();
+
     public PacketHandler(TcpServer server)
     {
         // 세션 종료 시 매핑 정리
@@ -25,6 +32,13 @@ public class PacketHandler
         {
             _sessionToEntityId.Remove(session.SessionId);
             _sessionToZoneId.Remove(session.SessionId);
+
+            // 로그인 세션 맵에서도 제거 (해당 세션이 등록된 경우에만)
+            if (session.PlayerId.HasValue)
+            {
+                _loggedInSessions.TryRemove(
+                    new KeyValuePair<long, ISession>(session.PlayerId.Value, session));
+            }
         };
 
         RegisterHandlers();
@@ -101,8 +115,22 @@ public class PacketHandler
 
             await DatabaseManager.Instance.Auth.UpdateLastLoginAsync(account.AccountId);
 
+            // 중복 로그인 처리: 기존 세션이 있으면 강제 종료
+            if (_loggedInSessions.TryGetValue(account.AccountId, out var existingSession))
+            {
+                Log.Warning("Session {Id}: duplicate login for AccountId={AccountId}, kicking existing session {ExistingId}",
+                    session.SessionId, account.AccountId, existingSession.SessionId);
+
+                existingSession.Send(PacketId.S2C_ForceLogout, new S2C_ForceLogout
+                    { Message = "다른 곳에서 로그인되었습니다." });
+                existingSession.Disconnect();
+            }
+
             session.PlayerId   = account.AccountId;
             session.PlayerName = account.Username;
+
+            // 새 세션을 로그인 맵에 등록
+            _loggedInSessions[account.AccountId] = session;
 
             session.Send(PacketId.S2C_LoginResult, new S2C_LoginResult
             {
@@ -181,7 +209,14 @@ public class PacketHandler
             _sessionToEntityId[session.SessionId] = entityId;
             _sessionToZoneId[session.SessionId]   = townZone.ZoneId;
 
+            // ViewRadius 이내 기존 엔티티 목록 (거리 필터 적용)
             var nearbyEntities = townZone.GetNearbyEntityInfos(session);
+
+            // AoiSystem 중복 Spawn 방지: 초기 관심 집합 설정
+            var interest = entity.Get<Game.Components.InterestComponent>();
+            foreach (var e in nearbyEntities)
+                interest.VisibleEntityIds.Add(e.EntityId);
+
             var result = new S2C_EnterTownResult
             {
                 Success  = true,
@@ -200,6 +235,8 @@ public class PacketHandler
         }
     }
 
+    private const float PortalInteractRadius = 5f; // 클라이언트(3f)보다 약간 여유 있게
+
     private void OnEnterDungeon(ISession session, C2S_EnterDungeon packet)
     {
         if (session.PlayerId == null || string.IsNullOrEmpty(session.PlayerName))
@@ -207,6 +244,39 @@ public class PacketHandler
             session.Send(PacketId.S2C_EnterDungeonResult, new S2C_EnterDungeonResult
                 { Success = false, Message = "Not logged in" });
             return;
+        }
+
+        // ── 포털 거리 검증 ────────────────────────────────────────────────────
+        var townZone = ZoneManager.Instance.GetTownZone();
+        var playerPos = townZone.GetPlayerPosition(session);
+        if (playerPos == null)
+        {
+            session.Send(PacketId.S2C_EnterDungeonResult, new S2C_EnterDungeonResult
+                { Success = false, Message = "Player not in town" });
+            return;
+        }
+
+        if (GameDataManager.Instance.IsLoaded)
+        {
+            var portals = GameDataManager.MapObjectData
+                .Where(o => o.ObjectType == ObjectType.DungeonPortal && o.ReferenceId == packet.DungeonId)
+                .ToList();
+
+            bool nearPortal = portals.Any(p =>
+            {
+                float dx = p.PosX - playerPos.Value.X;
+                float dz = p.PosZ - playerPos.Value.Z;
+                return MathF.Sqrt(dx * dx + dz * dz) <= PortalInteractRadius;
+            });
+
+            if (!nearPortal)
+            {
+                Log.Warning("Session {Id}: EnterDungeon rejected — not near portal (dungeonId={DungeonId}, pos={X},{Z})",
+                    session.SessionId, packet.DungeonId, playerPos.Value.X, playerPos.Value.Z);
+                session.Send(PacketId.S2C_EnterDungeonResult, new S2C_EnterDungeonResult
+                    { Success = false, Message = "Not near dungeon portal" });
+                return;
+            }
         }
 
         try
@@ -225,6 +295,14 @@ public class PacketHandler
                 EntityId = entityId,
                 Position = new Vec3 { X = 0, Y = 0, Z = 0 }
             });
+
+            // 첫 번째 플레이어가 입장하면 기본 몬스터를 자동 스폰
+            if (dungeonZone.PartyMembers.Count == 1)
+            {
+                dungeonZone.EnqueueSpawn(1, new GameShared.Utils.Vector3 { X =  5, Y = 0, Z =  0 }); // Slime
+                dungeonZone.EnqueueSpawn(1, new GameShared.Utils.Vector3 { X = -5, Y = 0, Z =  0 }); // Slime
+                dungeonZone.EnqueueSpawn(2, new GameShared.Utils.Vector3 { X =  0, Y = 0, Z =  5 }); // Goblin
+            }
 
             Log.Information("Session {Id}: entered dungeon (EntityId={EntityId}, ZoneId={ZoneId})",
                 session.SessionId, entityId, dungeonZone.ZoneId);
@@ -245,6 +323,12 @@ public class PacketHandler
             return;
         }
 
+        if (!_sessionToZoneId.TryGetValue(session.SessionId, out var zoneId))
+        {
+            Log.Warning("Session {Id}: move but no zone", session.SessionId);
+            return;
+        }
+
         var dest = packet.Destination;
         if (dest == null || !IsValidCoordinate(dest.X, dest.Y, dest.Z))
         {
@@ -254,9 +338,11 @@ public class PacketHandler
 
         Log.Debug("Session {Id}: move → ({X},{Y},{Z})", session.SessionId, dest.X, dest.Y, dest.Z);
 
-        var townZone    = ZoneManager.Instance.GetTownZone();
+        var zone = ZoneManager.Instance.GetZone(zoneId);
+        if (zone == null) return;
+
         var destination = new GameShared.Utils.Vector3 { X = dest.X, Y = dest.Y, Z = dest.Z };
-        townZone.HandleMove(entityId, destination, 5.0f);
+        zone.HandleMove(entityId, destination, 5.0f);
     }
 
     private void OnChat(ISession session, C2S_Chat packet)
@@ -264,6 +350,12 @@ public class PacketHandler
         if (!_sessionToEntityId.TryGetValue(session.SessionId, out var entityId))
         {
             Log.Warning("Session {Id}: chat but no entity", session.SessionId);
+            return;
+        }
+
+        if (!_sessionToZoneId.TryGetValue(session.SessionId, out var zoneId))
+        {
+            Log.Warning("Session {Id}: chat but no zone", session.SessionId);
             return;
         }
 
@@ -279,8 +371,8 @@ public class PacketHandler
 
         Log.Information("Session {Id}: chat — {Message}", session.SessionId, message);
 
-        var townZone = ZoneManager.Instance.GetTownZone();
-        townZone.HandleChat(entityId, message);
+        var zone = ZoneManager.Instance.GetZone(zoneId);
+        zone?.HandleChat(entityId, message);
     }
 
     private void OnAttack(ISession session, C2S_Attack packet)

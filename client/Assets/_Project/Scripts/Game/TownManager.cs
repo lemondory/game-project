@@ -1,6 +1,10 @@
 using UnityEngine;
 using GameShared.Proto;
+using GameShared.Data;
+using GameShared.Generated.Enums;
+using GameShared.Generated.Data;
 using System.Collections.Generic;
+using System.Linq;
 
 /// <summary>
 /// Town 씬의 엔티티(플레이어/몬스터)를 관리하는 싱글톤
@@ -13,6 +17,7 @@ public class TownManager : MonoBehaviour
     [Header("프리팹")]
     public GameObject myPlayerPrefab;      // 내 플레이어 (PlayerController 포함)
     public GameObject otherPlayerPrefab;   // 다른 플레이어/NPC (EntityMover 포함)
+    public GameObject dungeonPortalPrefab; // 던전 포탈 오브젝트
 
     [Header("카메라")]
     public CameraFollow cameraFollow;
@@ -74,6 +79,59 @@ public class TownManager : MonoBehaviour
             SpawnEntity(entity);
 
         Debug.Log($"TownManager: Initialized. My EntityId={MyEntityId}, Pos={spawnPos}");
+
+        // MapObjectData에서 현재 존(ZoneId=1)의 오브젝트 스폰
+        SpawnMapObjects(zoneId: 1);
+    }
+
+    private void SpawnMapObjects(int zoneId)
+    {
+        if (!GameDataManager.Instance.IsLoaded)
+        {
+            Debug.LogWarning("TownManager: GameDataManager not loaded, skipping map objects");
+            return;
+        }
+
+        foreach (var obj in GameDataManager.MapObjectData.Where(o => o.ZoneId == zoneId))
+        {
+            var pos = new Vector3(obj.PosX, obj.PosY, obj.PosZ);
+
+            switch (obj.ObjectType)
+            {
+                case ObjectType.DungeonPortal:
+                    SpawnDungeonPortal(obj, pos);
+                    break;
+                // 추후: case ObjectType.Npc: / Shop: / QuestBoard: 등 확장
+            }
+        }
+    }
+
+    private void SpawnDungeonPortal(MapObjectData obj, Vector3 pos)
+    {
+        if (dungeonPortalPrefab == null)
+        {
+            Debug.LogWarning("TownManager: dungeonPortalPrefab not assigned in Inspector");
+            return;
+        }
+
+        var dungeonData = GameDataManager.DungeonData.GetById(obj.ReferenceId);
+        if (dungeonData == null)
+        {
+            Debug.LogWarning($"TownManager: DungeonId={obj.ReferenceId} not found in DungeonData");
+            return;
+        }
+
+        var go = Instantiate(dungeonPortalPrefab, pos, Quaternion.identity);
+        go.name = $"Portal_{dungeonData.Name}";
+
+        var portal = go.GetComponent<DungeonPortal>();
+        if (portal != null)
+        {
+            portal.DungeonId   = dungeonData.DungeonId;
+            portal.DungeonName = dungeonData.Name;
+        }
+
+        Debug.Log($"TownManager: Spawned portal '{dungeonData.Name}' at {pos}");
     }
 
     // ── 패킷 핸들러 ─────────────────────────────────────────────────────────

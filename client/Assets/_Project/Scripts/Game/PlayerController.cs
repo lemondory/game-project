@@ -35,8 +35,9 @@ public class PlayerController : MonoBehaviour
 
         if (isMoving)
         {
-            // 이동
+            // 이동 (Y는 항상 0으로 고정)
             transform.position += dir * moveSpeed * Time.deltaTime;
+            transform.position = new Vector3(transform.position.x, 0f, transform.position.z);
 
             // 이동 방향으로 회전
             transform.rotation = Quaternion.Slerp(

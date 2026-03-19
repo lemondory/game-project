@@ -1,14 +1,16 @@
 using DefaultEcs;
 using DefaultEcs.System;
+using GameServer.Game;
 using GameServer.Game.Components;
+using GameServer.Game.Zones;
 using GameShared.Enums;
 using GameShared.Proto;
-using Serilog;
 
 namespace GameServer.Game.Systems;
 
 /// <summary>
-/// Broadcasts entity changes to clients in the same zone
+/// Broadcasts entity position changes to clients in the same zone.
+/// Damage/death are broadcast explicitly by the zone (DungeonZone), not here.
 /// </summary>
 public class BroadcastSystem : AEntitySetSystem<float>
 {
@@ -29,7 +31,7 @@ public class BroadcastSystem : AEntitySetSystem<float>
         if (!dirty.IsAnyDirty)
             return;
 
-        ref var zone = ref entity.Get<ZoneComponent>();
+        ref var zone     = ref entity.Get<ZoneComponent>();
         ref var entityId = ref entity.Get<EntityIdComponent>();
 
         // Broadcast position changes
@@ -39,14 +41,6 @@ public class BroadcastSystem : AEntitySetSystem<float>
             BroadcastPosition(zone.ZoneId, entityId.EntityId, position.Position);
         }
 
-        // Broadcast health changes
-        if (dirty.HealthChanged && entity.Has<HealthComponent>())
-        {
-            ref var health = ref entity.Get<HealthComponent>();
-            BroadcastDamage(zone.ZoneId, entityId.EntityId, health.Current, health.Max);
-        }
-
-        // Clear dirty flags
         dirty.Clear();
     }
 
@@ -58,51 +52,25 @@ public class BroadcastSystem : AEntitySetSystem<float>
             Position = new Vec3 { X = position.X, Y = position.Y, Z = position.Z }
         };
 
-        // Send to all players in the same zone
         var entities = _world.GetEntities()
             .With<SessionComponent>()
             .With<ZoneComponent>()
+            .With<InterestComponent>()
             .AsSet();
 
         foreach (var targetEntity in entities.GetEntities())
         {
             ref var targetZone = ref targetEntity.Get<ZoneComponent>();
-            if (targetZone.ZoneId == zoneId)
+            if (targetZone.ZoneId != zoneId) continue;
+
+            var interest = targetEntity.Get<InterestComponent>();
+            if (!interest.VisibleEntityIds.Contains(entityId)) continue;
+
+            ref var session = ref targetEntity.Get<SessionComponent>();
+            if (session.Session.IsConnected)
             {
-                ref var session = ref targetEntity.Get<SessionComponent>();
-                if (session.Session.IsConnected)
-                {
-                    session.Session.Send(PacketId.S2C_Move, packet);
-                }
-            }
-        }
-    }
-
-    private void BroadcastDamage(int zoneId, long entityId, int currentHp, int maxHp)
-    {
-        var packet = new S2C_Damage
-        {
-            TargetEntityId = entityId,
-            Damage = maxHp - currentHp, // Simplified - just show total damage
-            CurrentHp = currentHp
-        };
-
-        // Send to all players in the same zone
-        var entities = _world.GetEntities()
-            .With<SessionComponent>()
-            .With<ZoneComponent>()
-            .AsSet();
-
-        foreach (var targetEntity in entities.GetEntities())
-        {
-            ref var targetZone = ref targetEntity.Get<ZoneComponent>();
-            if (targetZone.ZoneId == zoneId)
-            {
-                ref var session = ref targetEntity.Get<SessionComponent>();
-                if (session.Session.IsConnected)
-                {
-                    session.Session.Send(PacketId.S2C_Damage, packet);
-                }
+                session.Session.Send(PacketId.S2C_Move, packet);
+                Interlocked.Increment(ref Zone.TotalMovePacketsSent);
             }
         }
     }

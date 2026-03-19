@@ -15,3 +15,8 @@ message S2C_LoginResult {
   int64 player_id = 3;
   string player_name = 4;
 }
+
+// 서버가 기존 세션을 강제 종료할 때 전송 (중복 로그인)
+message S2C_ForceLogout {
+  string message = 1;
+}
