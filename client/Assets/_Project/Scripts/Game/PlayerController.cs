@@ -4,8 +4,8 @@ using UnityEngine.InputSystem;
 using GameShared.Enums;
 
 /// <summary>
-/// 내 플레이어의 입력 처리 및 이동 (New Input System)
-/// WASD로 이동하고 주기적으로 서버에 C2S_Move를 전송한다
+/// 내 플레이어의 입력 처리 (New Input System)
+/// WASD 이동 + 마우스 좌클릭 공격 (던전에서만 활성화)
 /// </summary>
 public class PlayerController : MonoBehaviour
 {
@@ -15,52 +15,98 @@ public class PlayerController : MonoBehaviour
     [Header("서버 동기화 간격 (초)")]
     public float sendInterval = 0.1f;
 
+    [Header("공격")]
+    public float attackRange = 3f;
+    public float attackCooldown = 1f;
+
     private float _nextSendTime;
     private bool _wasMoving;
+    private float _lastAttackTime;
 
     void Update()
     {
-        // UI 입력 필드에 포커스 중이면 이동 입력 무시
+        // UI 입력 필드에 포커스 중이면 입력 무시
         if (EventSystem.current != null && EventSystem.current.currentSelectedGameObject != null)
             return;
 
+        HandleMovement();
+        HandleAttack();
+    }
+
+    // ── 이동 ──────────────────────────────────────────────────────────────────
+
+    private void HandleMovement()
+    {
         var keyboard = Keyboard.current;
         if (keyboard == null) return;
 
-        float h = (keyboard.dKey.isPressed ? 1f : 0f) - (keyboard.aKey.isPressed ? 1f : 0f);
-        float v = (keyboard.wKey.isPressed ? 1f : 0f) - (keyboard.sKey.isPressed ? 1f : 0f);
+        float horizontal = (keyboard.dKey.isPressed ? 1f : 0f) - (keyboard.aKey.isPressed ? 1f : 0f);
+        float vertical   = (keyboard.wKey.isPressed ? 1f : 0f) - (keyboard.sKey.isPressed ? 1f : 0f);
 
-        var dir = new Vector3(h, 0f, v).normalized;
-        bool isMoving = dir != Vector3.zero;
+        var direction = new Vector3(horizontal, 0f, vertical).normalized;
+        bool isMoving = direction != Vector3.zero;
 
         if (isMoving)
         {
-            // 이동 (Y는 항상 0으로 고정)
-            transform.position += dir * moveSpeed * Time.deltaTime;
+            transform.position += direction * moveSpeed * Time.deltaTime;
             transform.position = new Vector3(transform.position.x, 0f, transform.position.z);
 
-            // 이동 방향으로 회전
             transform.rotation = Quaternion.Slerp(
                 transform.rotation,
-                Quaternion.LookRotation(dir),
+                Quaternion.LookRotation(direction),
                 Time.deltaTime * 15f
             );
 
-            // 주기적으로 서버에 목적지 전송
             if (Time.time >= _nextSendTime)
             {
-                SendMove(transform.position + dir * 0.5f);
+                SendMove(transform.position + direction * 0.5f);
                 _nextSendTime = Time.time + sendInterval;
             }
         }
         else if (_wasMoving)
         {
-            // 멈춘 순간 현재 위치를 목적지로 전송
             SendMove(transform.position);
         }
 
         _wasMoving = isMoving;
     }
+
+    // ── 공격 ──────────────────────────────────────────────────────────────────
+
+    private void HandleAttack()
+    {
+        if (!Mouse.current.leftButton.wasPressedThisFrame) return;
+        if (DungeonManager.Instance == null) return;
+        if (Time.time - _lastAttackTime < attackCooldown) return;
+
+        // UI 위의 클릭은 무시
+        if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject())
+            return;
+
+        long targetEntityId = DungeonManager.Instance.FindNearestMonster(transform.position, attackRange);
+        if (targetEntityId < 0) return;
+
+        // 공격 대상을 향해 회전
+        var targetObj = DungeonManager.Instance.GetEntityObject(targetEntityId);
+        if (targetObj != null)
+        {
+            var lookDir = targetObj.transform.position - transform.position;
+            lookDir.y = 0f;
+            if (lookDir != Vector3.zero)
+                transform.rotation = Quaternion.LookRotation(lookDir);
+        }
+
+        // 타겟 표시
+        DungeonManager.Instance.SetTarget(targetEntityId);
+
+        _lastAttackTime = Time.time;
+        NetworkManager.Instance.Send(PacketId.C2S_Attack, new GameShared.Proto.C2S_Attack
+        {
+            TargetEntityId = targetEntityId
+        });
+    }
+
+    // ── 서버 동기화 ───────────────────────────────────────────────────────────
 
     private void SendMove(Vector3 destination)
     {

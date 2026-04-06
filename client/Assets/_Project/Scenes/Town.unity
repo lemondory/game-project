@@ -871,7 +871,7 @@ MonoBehaviour:
   m_text: "\u200B"
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
-  m_sharedMaterial: {fileID: 2180264, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
+  m_sharedMaterial: {fileID: -5568251123898366216, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
   m_fontSharedMaterials: []
   m_fontMaterial: {fileID: 0}
   m_fontMaterials: []
@@ -1226,7 +1226,7 @@ MonoBehaviour:
   m_text: 'Enter '
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
-  m_sharedMaterial: {fileID: 2180264, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
+  m_sharedMaterial: {fileID: -5568251123898366216, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
   m_fontSharedMaterials: []
   m_fontMaterial: {fileID: 0}
   m_fontMaterials: []
@@ -2270,7 +2270,7 @@ MonoBehaviour:
   m_text: Enter text...
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
-  m_sharedMaterial: {fileID: 2180264, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
+  m_sharedMaterial: {fileID: -5568251123898366216, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
   m_fontSharedMaterials: []
   m_fontMaterial: {fileID: 0}
   m_fontMaterials: []
@@ -2510,7 +2510,7 @@ MonoBehaviour:
   m_text: Chat
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
-  m_sharedMaterial: {fileID: 2180264, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
+  m_sharedMaterial: {fileID: -5568251123898366216, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
   m_fontSharedMaterials: []
   m_fontMaterial: {fileID: 0}
   m_fontMaterials: []
@@ -2870,7 +2870,7 @@ MonoBehaviour:
   m_text: Send
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
-  m_sharedMaterial: {fileID: 2180264, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
+  m_sharedMaterial: {fileID: -5568251123898366216, guid: 6c1d6a76b684a4e49acdeeb05ea6b0d2, type: 2}
   m_fontSharedMaterials: []
   m_fontMaterial: {fileID: 0}
   m_fontMaterials: []
