@@ -33,12 +33,12 @@ public sealed class Session : ISession
         });
 
     private readonly CancellationTokenSource _cts = new();
-    private volatile bool _isConnected = true;
+    private int _disconnected = 0; // Interlocked용: 0=연결, 1=해제
 
     public long SessionId { get; }
     public long? PlayerId { get; set; }
     public string PlayerName { get; set; } = string.Empty;
-    public bool IsConnected => _isConnected;
+    public bool IsConnected => _disconnected == 0;
 
     public event Action<Session, PacketId, byte[]>? OnPacketReceived;
     public event Action<Session>? OnDisconnected;
@@ -217,13 +217,13 @@ public sealed class Session : ISession
     /// </summary>
     public void Send(PacketId packetId, IMessage packet)
     {
-        if (!_isConnected)
+        if (_disconnected != 0)
             return;
 
         try
         {
-            byte[] body = packet.ToByteArray();
-            int totalSize = 4 + body.Length;
+            int bodySize  = packet.CalculateSize();
+            int totalSize = 4 + bodySize;
 
             if (totalSize > ushort.MaxValue)
             {
@@ -234,7 +234,7 @@ public sealed class Session : ISession
             byte[] buf = new byte[totalSize];
             BitConverter.TryWriteBytes(buf.AsSpan(0, 2), (ushort)totalSize);
             BitConverter.TryWriteBytes(buf.AsSpan(2, 2), (ushort)packetId);
-            body.CopyTo(buf, 4);
+            packet.WriteTo(buf.AsSpan(4)); // 중간 배열 없이 직접 직렬화
 
             _sendChannel.Writer.TryWrite(buf);
         }
@@ -248,10 +248,11 @@ public sealed class Session : ISession
 
     public void Disconnect()
     {
-        if (!_isConnected)
+        // 여러 스레드(ReceiveLoopAsync, SendLoopAsync 등)가 동시에 호출할 수 있으므로
+        // Interlocked로 원자적 처리하여 정확히 한 번만 실행되도록 보장
+        if (Interlocked.CompareExchange(ref _disconnected, 1, 0) != 0)
             return;
 
-        _isConnected = false;
         _cts.Cancel();
         _sendChannel.Writer.TryComplete();
 
