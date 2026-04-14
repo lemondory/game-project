@@ -22,6 +22,10 @@ public class DungeonHUD : MonoBehaviour
     [Header("전투 로그")]
     public TextMeshProUGUI combatLogText;
 
+    [Header("사망 UI")]
+    public GameObject deathPanel;
+    public Button returnToTownButton;
+
     private int _currentHp;
     private int _maxHp;
     private float _combatLogTimer;
@@ -30,6 +34,17 @@ public class DungeonHUD : MonoBehaviour
     void Awake()
     {
         Instance = this;
+    }
+
+    void Start()
+    {
+        // 사망 패널 초기 비활성화
+        if (deathPanel != null)
+            deathPanel.SetActive(false);
+
+        // 마을 복귀 버튼 이벤트 연결
+        if (returnToTownButton != null)
+            returnToTownButton.onClick.AddListener(OnReturnToTownClicked);
     }
 
     void Update()
@@ -100,6 +115,16 @@ public class DungeonHUD : MonoBehaviour
     public void ShowPlayerDeath()
     {
         ShowCombatLog("YOU DIED");
-        _combatLogTimer = float.MaxValue;  // 죽으면 계속 표시
+        _combatLogTimer = float.MaxValue;
+
+        // 사망 패널 표시
+        if (deathPanel != null)
+            deathPanel.SetActive(true);
+    }
+
+    private void OnReturnToTownClicked()
+    {
+        if (DungeonManager.Instance != null)
+            DungeonManager.Instance.LeaveDungeon();
     }
 }

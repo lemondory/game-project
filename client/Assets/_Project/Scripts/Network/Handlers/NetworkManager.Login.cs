@@ -24,6 +24,9 @@ public partial class NetworkManager
         Debug.LogWarning($"[NetworkManager] ForceLogout: {packet.Message}");
         Disconnect();
         OnForceLogout?.Invoke(packet.Message);
-        SceneManager.LoadScene("Login");
+        if (LoadingScreen.Instance != null)
+            LoadingScreen.Instance.LoadScene("Login");
+        else
+            SceneManager.LoadScene("Login");
     }
 }

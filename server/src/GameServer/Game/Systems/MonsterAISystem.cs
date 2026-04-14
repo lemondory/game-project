@@ -50,8 +50,8 @@ public class MonsterAISystem : AEntitySetSystem<float>
 
     private void UpdateIdle(in Entity entity, ref AIComponent ai, ref PositionComponent position, float deltaTime)
     {
-        // Look for nearby players
-        var nearestPlayer = FindNearestPlayer(position.Position, ai.AggroRange);
+        // 살아있는 플레이어만 타겟팅
+        var nearestPlayer = FindNearestAlivePlayer(position.Position, ai.AggroRange);
 
         if (nearestPlayer.HasValue)
         {
@@ -87,17 +87,15 @@ public class MonsterAISystem : AEntitySetSystem<float>
 
     private void UpdateChase(in Entity entity, ref AIComponent ai, ref PositionComponent position, float deltaTime)
     {
-        // Find target
         var target = FindEntityById(ai.TargetEntityId);
 
-        if (!target.HasValue)
+        // 타겟이 없거나 죽었으면 Idle로 복귀
+        if (!target.HasValue || IsEntityDead(target.Value))
         {
-            // Target lost, return to idle
             ai.State = AIState.Idle;
             ai.TargetEntityId = 0;
             ai.StateTime = 0f;
 
-            // Stop moving
             entity.Remove<DestinationComponent>();
             entity.Remove<VelocityComponent>();
 
@@ -148,15 +146,21 @@ public class MonsterAISystem : AEntitySetSystem<float>
 
     private void UpdateAttack(in Entity entity, ref AIComponent ai, ref PositionComponent position, float deltaTime)
     {
-        // Find target
         var target = FindEntityById(ai.TargetEntityId);
 
-        if (!target.HasValue)
+        // 타겟이 없거나 죽었으면 전투 해제 + Idle 복귀
+        if (!target.HasValue || IsEntityDead(target.Value))
         {
-            // Target lost, return to idle
             ai.State = AIState.Idle;
             ai.TargetEntityId = 0;
             ai.StateTime = 0f;
+
+            if (entity.Has<CombatStateComponent>())
+            {
+                ref var combat = ref entity.Get<CombatStateComponent>();
+                combat.InCombat = false;
+                combat.TargetEntityId = 0;
+            }
             return;
         }
 
@@ -192,11 +196,13 @@ public class MonsterAISystem : AEntitySetSystem<float>
         }
     }
 
-    private Entity? FindNearestPlayer(Vector3 position, float range)
+    /// <summary>범위 내에서 가장 가까운 살아있는 플레이어를 찾는다.</summary>
+    private Entity? FindNearestAlivePlayer(Vector3 position, float range)
     {
         var players = World.GetEntities()
             .With<PlayerComponent>()
             .With<PositionComponent>()
+            .With<HealthComponent>()
             .AsSet();
 
         Entity? nearest = null;
@@ -204,6 +210,9 @@ public class MonsterAISystem : AEntitySetSystem<float>
 
         foreach (var player in players.GetEntities())
         {
+            ref var health = ref player.Get<HealthComponent>();
+            if (health.IsDead) continue;
+
             ref var playerPos = ref player.Get<PositionComponent>();
             float distance = position.Distance(playerPos.Position);
 
@@ -215,6 +224,11 @@ public class MonsterAISystem : AEntitySetSystem<float>
         }
 
         return nearest;
+    }
+
+    private static bool IsEntityDead(Entity entity)
+    {
+        return entity.Has<HealthComponent>() && entity.Get<HealthComponent>().IsDead;
     }
 
     private Entity? FindEntityById(long entityId)

@@ -83,8 +83,7 @@ public class DungeonZone : Zone
         Log.Information("Player entered dungeon: {PlayerId} - {PlayerName} (EntityId: {EntityId}, DungeonId: {DungeonId})",
             playerId, playerName, entityId, DungeonId);
 
-        // 기존 엔티티를 ViewRadius 이내 것만 전송하고 InterestComponent 초기화
-        SendExistingEntitiesInRange(session, entity);
+        // NearbyEntities는 S2C_EnterDungeonResult에 포함하여 전송 (PacketHandler에서 처리)
 
         return entity;
     }
@@ -294,7 +293,11 @@ public class DungeonZone : Zone
         });
     }
 
-    /// <summary>S2C_Death는 죽은 엔티티를 실제로 보고 있던 플레이어에게만 전송한다.</summary>
+    /// <summary>
+    /// S2C_Death를 관련 플레이어에게 전송한다.
+    /// - 죽은 엔티티를 관심 목록에 가진 플레이어 (다른 엔티티의 사망을 볼 수 있도록)
+    /// - 죽은 엔티티가 플레이어 본인인 경우 (자기 사망은 무조건 수신)
+    /// </summary>
     private void BroadcastDeath(long deadEntityId, long killerEntityId)
     {
         var packet = new S2C_Death { EntityId = deadEntityId, KillerEntityId = killerEntityId };
@@ -302,12 +305,18 @@ public class DungeonZone : Zone
         var entities = World.GetEntities()
             .With<SessionComponent>()
             .With<InterestComponent>()
+            .With<EntityIdComponent>()
             .AsSet();
 
         foreach (var entity in entities.GetEntities())
         {
+            ref var entityId = ref entity.Get<EntityIdComponent>();
             var interest = entity.Get<InterestComponent>();
-            if (!interest.VisibleEntityIds.Contains(deadEntityId)) continue;
+
+            // 자기 자신이 죽은 경우 또는 죽은 엔티티를 보고 있던 경우
+            bool isSelf = entityId.EntityId == deadEntityId;
+            bool isVisible = interest.VisibleEntityIds.Contains(deadEntityId);
+            if (!isSelf && !isVisible) continue;
 
             ref var session = ref entity.Get<SessionComponent>();
             if (session.Session.IsConnected)
@@ -330,37 +339,45 @@ public class DungeonZone : Zone
     }
 
     /// <summary>
-    /// 새로 입장한 플레이어에게 ViewRadius 이내 기존 엔티티의 S2C_Spawn을 전송하고,
-    /// 해당 엔티티 ID들을 새 플레이어의 InterestComponent에 등록한다.
+    /// 입장 시점의 ViewRadius 이내 엔티티 목록을 반환한다.
+    /// 새 플레이어는 제외하며, S2C_EnterDungeonResult.NearbyEntities에 포함된다.
     /// </summary>
-    private void SendExistingEntitiesInRange(ISession newPlayerSession, Entity newPlayerEntity)
+    public List<EntityInfo> GetNearbyEntityInfos(ISession excludeSession)
     {
-        ref var newPos   = ref newPlayerEntity.Get<PositionComponent>();
-        var     interest = newPlayerEntity.Get<InterestComponent>();
-
-        float px = newPos.Position.X;
-        float pz = newPos.Position.Z;
-
-        var entities = World.GetEntities()
+        // 새 플레이어 위치 파악
+        float playerX = 0f, playerZ = 0f;
+        var allEntities = World.GetEntities()
             .With<EntityIdComponent>()
             .With<PositionComponent>()
             .With<HealthComponent>()
             .AsSet();
 
-        foreach (var entity in entities.GetEntities())
+        foreach (var candidate in allEntities.GetEntities())
         {
-            // 자기 자신 제외
+            if (!candidate.Has<SessionComponent>()) continue;
+            if (candidate.Get<SessionComponent>().Session != excludeSession) continue;
+            ref var playerPos = ref candidate.Get<PositionComponent>();
+            playerX = playerPos.Position.X;
+            playerZ = playerPos.Position.Z;
+            break;
+        }
+
+        var result = new List<EntityInfo>();
+
+        foreach (var entity in allEntities.GetEntities())
+        {
+            // 새로 입장하는 플레이어 본인은 제외
             if (entity.Has<SessionComponent>())
             {
-                ref var s = ref entity.Get<SessionComponent>();
-                if (s.Session == newPlayerSession) continue;
+                ref var session = ref entity.Get<SessionComponent>();
+                if (session.Session == excludeSession) continue;
             }
 
             // ViewRadius 거리 필터
             ref var pos = ref entity.Get<PositionComponent>();
-            float dx = pos.Position.X - px;
-            float dz = pos.Position.Z - pz;
-            if (dx * dx + dz * dz > ViewRadiusSq) continue;
+            float distX = pos.Position.X - playerX;
+            float distZ = pos.Position.Z - playerZ;
+            if (distX * distX + distZ * distZ > ViewRadiusSq) continue;
 
             ref var entityId = ref entity.Get<EntityIdComponent>();
             ref var health   = ref entity.Get<HealthComponent>();
@@ -377,38 +394,27 @@ public class DungeonZone : Zone
             else if (entity.Has<MonsterComponent>())
             {
                 ref var monster = ref entity.Get<MonsterComponent>();
-                entityName = $"Monster{monster.MonsterId}";
+                entityName = monster.Data.Name;
                 entityType = GameShared.Proto.EntityType.Monster;
             }
             else
             {
-                entityName = string.Empty;
-                entityType = GameShared.Proto.EntityType.Player;
+                continue;
             }
 
-            newPlayerSession.Send(PacketId.S2C_Spawn, new S2C_Spawn
+            result.Add(new EntityInfo
             {
-                Entity = new EntityInfo
-                {
-                    EntityId   = entityId.EntityId,
-                    EntityType = entityType,
-                    Name       = entityName,
-                    Position   = new GameShared.Proto.Vec3 { X = pos.Position.X, Y = pos.Position.Y, Z = pos.Position.Z },
-                    CurrentHp  = health.Current,
-                    MaxHp      = health.Max
-                }
+                EntityId   = entityId.EntityId,
+                EntityType = entityType,
+                Name       = entityName,
+                Position   = new Vec3 { X = pos.Position.X, Y = pos.Position.Y, Z = pos.Position.Z },
+                CurrentHp  = health.Current,
+                MaxHp      = health.Max
             });
-
-            // InterestComponent 초기화 — AoiSystem 중복 Spawn 방지
-            interest.VisibleEntityIds.Add(entityId.EntityId);
         }
-    }
 
-    /// <summary>
-    /// Game loop 스레드에서 안전하게 몬스터를 스폰합니다 (네트워크 스레드에서 호출).
-    /// </summary>
-    public void EnqueueSpawn(int monsterId, GameShared.Utils.Vector3 position)
-        => EnqueueAction(() => SpawnMonster(monsterId, position));
+        return result;
+    }
 
     protected override void OnUpdate(float deltaTime)
     {

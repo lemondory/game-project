@@ -64,12 +64,15 @@ public class ZoneManager
 
         var dungeonZone = new DungeonZone(zoneId, dungeonId);
         _zones[zoneId] = dungeonZone;
+
+        // 게임루프 시작 전에 초기 몬스터를 스폰해야 한다.
+        // Start() 이후에 스폰하면 게임루프 스레드가 이미 실행 중인 상태에서
+        // 메인 스레드가 World를 수정하는 race condition이 발생한다.
+        SpawnMonstersForDungeon(dungeonZone, dungeonId);
+
         dungeonZone.Start();
 
         Log.Information("Dungeon instance created: ZoneId={ZoneId}, DungeonId={DungeonId}", zoneId, dungeonId);
-
-        // Spawn initial monsters
-        SpawnMonstersForDungeon(dungeonZone, dungeonId);
 
         return dungeonZone;
     }

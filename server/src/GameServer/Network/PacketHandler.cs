@@ -288,21 +288,24 @@ public class PacketHandler
             _sessionToEntityId[session.SessionId] = entityId;
             _sessionToZoneId[session.SessionId]   = dungeonZone.ZoneId;
 
-            session.Send(PacketId.S2C_EnterDungeonResult, new S2C_EnterDungeonResult
+            // 초기 몬스터는 CreateDungeonZone() 내부(게임루프 시작 전)에서 이미 스폰됨
+            // ViewRadius 이내 기존 엔티티 목록 (거리 필터 적용)
+            var nearbyEntities = dungeonZone.GetNearbyEntityInfos(session);
+
+            // AoiSystem 중복 Spawn 방지: 초기 관심 집합 설정
+            var interest = entity.Get<Game.Components.InterestComponent>();
+            foreach (var nearby in nearbyEntities)
+                interest.VisibleEntityIds.Add(nearby.EntityId);
+
+            var result = new S2C_EnterDungeonResult
             {
                 Success  = true,
                 Message  = "Entered dungeon",
                 EntityId = entityId,
                 Position = new Vec3 { X = 0, Y = 0, Z = 0 }
-            });
-
-            // 첫 번째 플레이어가 입장하면 기본 몬스터를 자동 스폰
-            if (dungeonZone.PartyMembers.Count == 1)
-            {
-                dungeonZone.EnqueueSpawn(1, new GameShared.Utils.Vector3 { X =  5, Y = 0, Z =  0 }); // Slime
-                dungeonZone.EnqueueSpawn(1, new GameShared.Utils.Vector3 { X = -5, Y = 0, Z =  0 }); // Slime
-                dungeonZone.EnqueueSpawn(2, new GameShared.Utils.Vector3 { X =  0, Y = 0, Z =  5 }); // Goblin
-            }
+            };
+            result.NearbyEntities.AddRange(nearbyEntities);
+            session.Send(PacketId.S2C_EnterDungeonResult, result);
 
             Log.Information("Session {Id}: entered dungeon (EntityId={EntityId}, ZoneId={ZoneId})",
                 session.SessionId, entityId, dungeonZone.ZoneId);

@@ -6,7 +6,6 @@ using System;
 
 public partial class NetworkManager
 {
-    public event Action<S2C_EnterTownResult>    OnEnterTownReceived;
     public event Action<S2C_EnterDungeonResult> OnEnterDungeonReceived;
 
     public S2C_EnterTownResult    PendingEnterTownResult    { get; private set; }
@@ -20,7 +19,10 @@ public partial class NetworkManager
         if (packet.Success)
         {
             PendingEnterTownResult = packet;
-            SceneManager.LoadScene("Town");
+            if (LoadingScreen.Instance != null)
+                LoadingScreen.Instance.LoadScene("Town");
+            else
+                SceneManager.LoadScene("Town");
         }
     }
 
@@ -32,7 +34,10 @@ public partial class NetworkManager
         if (packet.Success)
         {
             PendingEnterDungeonResult = packet;
-            SceneManager.LoadScene("Dungeon");
+            if (LoadingScreen.Instance != null)
+                LoadingScreen.Instance.LoadScene("Dungeon");
+            else
+                SceneManager.LoadScene("Dungeon");
         }
         else
         {

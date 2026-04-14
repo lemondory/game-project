@@ -29,7 +29,7 @@ public partial class NetworkManager : MonoBehaviour
         {
             if (_instance == null)
             {
-                _instance = FindObjectOfType<NetworkManager>();
+                _instance = FindAnyObjectByType<NetworkManager>();
                 if (_instance == null)
                 {
                     var go = new GameObject("NetworkManager");
@@ -47,7 +47,7 @@ public partial class NetworkManager : MonoBehaviour
     private const int PacketBufferSize     = 65536;
     private const int HeaderSize           = 4;       // [Size 2B][PacketId 2B]
     private const int MaxPacketSize        = 65535;    // ushort.MaxValue
-    private const int MaxMainThreadQueue   = 1024;
+    private const int MaxMainThreadQueue   = 4096;
 
     // ── 네트워크 ─────────────────────────────────────────────────────────────
 
@@ -353,9 +353,11 @@ public partial class NetworkManager : MonoBehaviour
         {
             if (_mainThreadQueue.Count >= MaxMainThreadQueue)
             {
-                Debug.LogError("[NetworkManager] Main thread queue overflow, disconnecting");
-                _mainThreadQueue.Clear();
-                return;
+                Debug.LogWarning($"[NetworkManager] Main thread queue overflow ({_mainThreadQueue.Count}), dropping oldest packets");
+                // 절반을 버려서 최신 패킷이 처리되도록 한다
+                int dropCount = _mainThreadQueue.Count / 2;
+                for (int i = 0; i < dropCount; i++)
+                    _mainThreadQueue.Dequeue();
             }
             _mainThreadQueue.Enqueue(action);
         }

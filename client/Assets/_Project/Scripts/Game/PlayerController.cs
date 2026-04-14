@@ -25,6 +25,10 @@ public class PlayerController : MonoBehaviour
 
     void Update()
     {
+        // 사망 시 입력 차단
+        if (DungeonManager.Instance != null && DungeonManager.Instance.IsDead)
+            return;
+
         // UI 입력 필드에 포커스 중이면 입력 무시
         if (EventSystem.current != null && EventSystem.current.currentSelectedGameObject != null)
             return;

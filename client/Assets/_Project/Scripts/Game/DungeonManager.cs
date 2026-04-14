@@ -25,6 +25,7 @@ public class DungeonManager : MonoBehaviour
     private readonly HashSet<long> _monsterEntityIds = new();
 
     public long MyEntityId { get; private set; }
+    public bool IsDead { get; private set; }
 
     void Awake()
     {
@@ -271,7 +272,7 @@ public class DungeonManager : MonoBehaviour
     {
         if (packet.EntityId == MyEntityId)
         {
-            Debug.Log("[DungeonManager] Player died!");
+            IsDead = true;
             if (DungeonHUD.Instance != null)
                 DungeonHUD.Instance.ShowPlayerDeath();
         }
