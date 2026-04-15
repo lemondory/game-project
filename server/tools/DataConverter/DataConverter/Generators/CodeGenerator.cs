@@ -103,7 +103,7 @@ public class CodeGenerator
         sb.AppendLine($"/// Auto-generated table class for {schema.ClassName}");
         sb.AppendLine("/// </summary>");
         sb.AppendLine("[MessagePackObject]");
-        sb.AppendLine($"public partial class {schema.CollectionClassName}");
+        sb.AppendLine($"public partial class {schema.CollectionClassName} : GameShared.Data.IDataTable");
         sb.AppendLine("{");
 
         sb.AppendLine($"    [Key(0)]");
@@ -267,7 +267,7 @@ public class CodeGenerator
         sb.AppendLine($"/// Auto-generated table class for {schema.ClassName}");
         sb.AppendLine("/// </summary>");
         sb.AppendLine("[MessagePackObject]");
-        sb.AppendLine($"public partial class {schema.CollectionClassName}");
+        sb.AppendLine($"public partial class {schema.CollectionClassName} : GameShared.Data.IDataTable");
         sb.AppendLine("{");
 
         // Primary key type

@@ -63,10 +63,10 @@ public class MonsterAISystem : AEntitySetSystem<float>
 
     private void UpdateIdle(in Entity entity, ref AIComponent ai, ref PositionComponent position)
     {
-        // AggroScanInterval마다만 플레이어 탐지 수행
-        // StateTime은 상태 진입 후 경과 시간 — 진입 직후(0~interval)는 스캔 생략
-        if (ai.StateTime % AggroScanInterval > AggroScanInterval - 0.051f)
-            return; // 아직 스캔 주기가 아님 (50ms = 1틱 오차 허용)
+        // AggroScanInterval(0.5초)마다 플레이어 탐지 수행
+        // StateTime이 interval의 배수를 넘을 때마다 스캔 — 나머지 틱은 생략
+        if (ai.StateTime % AggroScanInterval < AggroScanInterval - 0.051f)
+            return;
 
         var nearestPlayer = FindNearestAlivePlayer(position.Position, ai.AggroRange);
         if (nearestPlayer.HasValue)
