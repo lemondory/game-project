@@ -7,31 +7,36 @@ using GameShared.Proto;
 namespace GameServer.Game.Systems;
 
 /// <summary>
-/// Manages per-player Area of Interest (AOI).
-/// Runs after MovementSystem so grid positions are current.
-/// Emits S2C_Spawn / S2C_Despawn when entities enter or leave a player's view radius.
+/// 플레이어별 관심 영역(AOI)을 관리한다.
+/// MovementSystem 다음에 실행되어 그리드 좌표가 최신 상태임을 보장한다.
+///
+/// 엔티티가 시야에 진입하면 S2C_Spawn, 벗어나면 S2C_Despawn을 전송하고
+/// SubscriberMap을 동기화하여 BroadcastSystem이 전체 플레이어 순회 없이
+/// 구독자에게 직접 S2C_Move를 전달할 수 있게 한다.
 /// </summary>
 public class AoiSystem : ISystem<float>
 {
     private const float ViewRadius   = 50f;
     private const float ViewRadiusSq = ViewRadius * ViewRadius;
 
-    private readonly AoiGrid    _grid;
+    private readonly AoiGrid       _grid;
+    private readonly SubscriberMap _subscriberMap;
 
-    // Entities that moved this tick — need grid sync
     private readonly EntitySet _dirtyMovedEntities;
-
-    // All entities with HP — used to build S2C_Spawn packets
     private readonly EntitySet _allEntities;
-
-    // Players with active interest tracking
     private readonly EntitySet _playerEntities;
+
+    // 매 틱 재사용 — 할당 없음
+    private readonly Dictionary<long, Entity> _entityLookup   = new();
+    private readonly HashSet<long>            _currentVisible = new();
+    private readonly List<long>               _leftView       = new();
 
     public bool IsEnabled { get; set; } = true;
 
-    public AoiSystem(World world, AoiGrid grid)
+    public AoiSystem(World world, AoiGrid grid, SubscriberMap subscriberMap)
     {
-        _grid = grid;
+        _grid          = grid;
+        _subscriberMap = subscriberMap;
 
         _dirtyMovedEntities = world.GetEntities()
             .With<DirtyComponent>()
@@ -58,7 +63,7 @@ public class AoiSystem : ISystem<float>
         if (!IsEnabled)
             return;
 
-        // ── Step 1: Sync moved entities into the grid ─────────────────────────
+        // ── Step 1: 이동한 엔티티 그리드 동기화 ─────────────────────────────────
         foreach (var entity in _dirtyMovedEntities.GetEntities())
         {
             if (!entity.IsAlive) continue;
@@ -70,23 +75,23 @@ public class AoiSystem : ISystem<float>
             _grid.Update(eid.EntityId, pos.Position.X, pos.Position.Z);
         }
 
-        // ── Step 2: Build entity lookup for Spawn packet construction ─────────
-        var entityLookup = new Dictionary<long, Entity>(_allEntities.Count);
+        // ── Step 2: 엔티티 조회 딕셔너리 갱신 (재사용) ──────────────────────────
+        _entityLookup.Clear();
         foreach (var entity in _allEntities.GetEntities())
         {
             if (!entity.IsAlive) continue;
             ref var eid = ref entity.Get<EntityIdComponent>();
-            entityLookup[eid.EntityId] = entity;
+            _entityLookup[eid.EntityId] = entity;
         }
 
-        // ── Step 3: Recalculate each player's interest set ────────────────────
+        // ── Step 3: 플레이어별 관심 집합 재계산 ─────────────────────────────────
         foreach (var playerEntity in _playerEntities.GetEntities())
         {
             if (!playerEntity.IsAlive) continue;
 
             ref var selfId  = ref playerEntity.Get<EntityIdComponent>();
             ref var selfPos = ref playerEntity.Get<PositionComponent>();
-            var     interest = playerEntity.Get<InterestComponent>();  // class — direct ref
+            var     interest = playerEntity.Get<InterestComponent>();
             ref var session  = ref playerEntity.Get<SessionComponent>();
 
             if (!session.Session.IsConnected) continue;
@@ -94,42 +99,44 @@ public class AoiSystem : ISystem<float>
             float px = selfPos.Position.X;
             float pz = selfPos.Position.Z;
 
-            // Candidate set: grid AABB → precise squared-distance check
-            var currentVisible = new HashSet<long>();
+            // 후보 집합: 그리드 AABB → 정밀 거리 필터
+            _currentVisible.Clear();
             foreach (var candidateId in _grid.GetEntityIdsInRange(px, pz, ViewRadius))
             {
                 if (candidateId == selfId.EntityId) continue;
-                if (!entityLookup.TryGetValue(candidateId, out var candidate)) continue;
+                if (!_entityLookup.TryGetValue(candidateId, out var candidate)) continue;
                 if (!candidate.IsAlive) continue;
 
                 ref var cPos = ref candidate.Get<PositionComponent>();
                 float dx = cPos.Position.X - px;
                 float dz = cPos.Position.Z - pz;
                 if (dx * dx + dz * dz <= ViewRadiusSq)
-                    currentVisible.Add(candidateId);
+                    _currentVisible.Add(candidateId);
             }
 
-            // Newly in view → S2C_Spawn
-            foreach (var newId in currentVisible)
+            // 새로 시야에 진입 → S2C_Spawn + SubscriberMap 등록
+            foreach (var newId in _currentVisible)
             {
                 if (interest.VisibleEntityIds.Contains(newId)) continue;
-                if (!entityLookup.TryGetValue(newId, out var newEntity) || !newEntity.IsAlive) continue;
+                if (!_entityLookup.TryGetValue(newId, out var newEntity) || !newEntity.IsAlive) continue;
 
                 session.Session.Send(PacketId.S2C_Spawn, BuildSpawnPacket(newEntity));
                 interest.VisibleEntityIds.Add(newId);
+                _subscriberMap.Subscribe(newId, session.Session);
             }
 
-            // Left view → S2C_Despawn
-            var leftView = new List<long>();
+            // 시야에서 벗어남 → S2C_Despawn + SubscriberMap 해제
+            _leftView.Clear();
             foreach (var oldId in interest.VisibleEntityIds)
             {
-                if (!currentVisible.Contains(oldId))
-                    leftView.Add(oldId);
+                if (!_currentVisible.Contains(oldId))
+                    _leftView.Add(oldId);
             }
-            foreach (var leftId in leftView)
+            foreach (var leftId in _leftView)
             {
                 session.Session.Send(PacketId.S2C_Despawn, new S2C_Despawn { EntityId = leftId });
                 interest.VisibleEntityIds.Remove(leftId);
+                _subscriberMap.Unsubscribe(leftId, session.Session);
             }
         }
     }
@@ -151,7 +158,7 @@ public class AoiSystem : ISystem<float>
         else if (entity.Has<MonsterComponent>())
         {
             ref var monster = ref entity.Get<MonsterComponent>();
-            name = $"Monster{monster.MonsterId}";
+            name = monster.Data.Name;
             type = GameShared.Proto.EntityType.Monster;
         }
         else

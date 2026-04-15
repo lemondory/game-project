@@ -28,6 +28,14 @@ public class DungeonZone : Zone
     public DateTime CreatedTime { get; }
     private readonly Random _random = new();
 
+    // 클리어 판정용
+    private bool _cleared = false;
+    private const float ClearAutoExitDelay = 10f; // 클리어 후 자동 퇴장까지 대기 시간(초)
+    private float _clearTimer = 0f;
+
+    // 몬스터 수 추적 (HandleDeath에서 감소)
+    private int _remainingMonsters = 0;
+
     public DungeonZone(int zoneId, int dungeonId) : base(zoneId, ZoneType.Dungeon)
     {
         DungeonId = dungeonId;
@@ -42,13 +50,13 @@ public class DungeonZone : Zone
         return new SequentialSystem<float>(
             new MonsterAISystem(World),
             new MovementSystem(World),
-            new AoiSystem(World, AoiGrid),       // AOI: Spawn/Despawn 관리
+            new AoiSystem(World, AoiGrid, SubscriberMap),   // AOI: Spawn/Despawn + SubscriberMap 동기화
             new CombatSystem(World,
                 onAttack: BroadcastAttack,
                 onDamage: (targetId, damage, hp, maxHp) => BroadcastDamage(targetId, damage, hp, maxHp),
                 onDeath:  HandleDeath),
-            new BroadcastSystem(World),           // S2C_Move (interest 필터 적용)
-            new SessionSystem(World, AoiGrid)     // 연결 끊김 정리
+            new BroadcastSystem(World, SubscriberMap),      // S2C_Move (SubscriberMap 직접 조회)
+            new SessionSystem(World, AoiGrid)               // 연결 끊김 정리
         );
     }
 
@@ -89,6 +97,35 @@ public class DungeonZone : Zone
     }
 
     /// <summary>
+    /// 플레이어를 던전 파티에서 제거하고, 해당 엔티티를 World에서 삭제한다.
+    /// </summary>
+    public void RemovePlayer(long playerId)
+    {
+        PartyMembers.Remove(playerId);
+
+        // 해당 플레이어의 엔티티를 World에서 찾아 제거
+        var playerEntities = World.GetEntities()
+            .With<PlayerComponent>()
+            .With<EntityIdComponent>()
+            .AsSet();
+
+        foreach (var entity in playerEntities.GetEntities())
+        {
+            if (!entity.IsAlive) continue;
+            ref var player = ref entity.Get<PlayerComponent>();
+            if (player.PlayerId != playerId) continue;
+
+            ref var eid = ref entity.Get<EntityIdComponent>();
+            AoiGrid.Remove(eid.EntityId);
+            SubscriberMap.RemoveEntity(eid.EntityId);
+            entity.Dispose();
+            break;
+        }
+
+        Log.Information("Player {PlayerId} left dungeon ZoneId={ZoneId}", playerId, ZoneId);
+    }
+
+    /// <summary>
     /// Spawn a monster with AI. BroadcastSpawn 없음 — AoiSystem이 다음 틱에 처리.
     /// </summary>
     public Entity SpawnMonster(int monsterId, GameShared.Utils.Vector3 position)
@@ -115,6 +152,7 @@ public class DungeonZone : Zone
 
         // 공간 해시 그리드에 등록 (AoiSystem이 다음 틱에 근처 플레이어에게 S2C_Spawn 전송)
         AoiGrid.Add(entityId, position.X, position.Z);
+        _remainingMonsters++;
 
         Log.Information("Monster spawned: {Name}(Id={MonsterId}) Lv{Level}, EntityId={EntityId}, Pos={Position}",
             monsterData.Name, monsterId, monsterData.Level, entityId, position);
@@ -267,8 +305,32 @@ public class DungeonZone : Zone
         {
             // 그리드에서 먼저 제거 → 다음 틱 AoiSystem이 leftView 감지 → S2C_Despawn 전송
             AoiGrid.Remove(deadEntityId.EntityId);
+            SubscriberMap.RemoveEntity(deadEntityId.EntityId);
             deadEntity.Dispose();
+
+            // 남은 몬스터 수 감소 → 0이 되면 클리어 판정
+            _remainingMonsters = Math.Max(0, _remainingMonsters - 1);
+            if (_remainingMonsters == 0 && !_cleared)
+                TriggerClear();
         }
+    }
+
+    /// <summary>모든 몬스터 처치 시 호출. 클리어 패킷 브로드캐스트 후 자동 퇴장 타이머 시작.</summary>
+    private void TriggerClear()
+    {
+        _cleared    = true;
+        _clearTimer = 0f;
+
+        int elapsedSeconds = (int)(DateTime.UtcNow - CreatedTime).TotalSeconds;
+
+        Log.Information("Dungeon cleared: ZoneId={ZoneId}, DungeonId={DungeonId}, Time={Time}s",
+            ZoneId, DungeonId, elapsedSeconds);
+
+        BroadcastToAllPlayers(PacketId.S2C_DungeonClear, new S2C_DungeonClear
+        {
+            DungeonId          = DungeonId,
+            ClearTimeSeconds   = elapsedSeconds
+        });
     }
 
     // ── Broadcast Helpers ────────────────────────────────────────────────────
@@ -418,6 +480,40 @@ public class DungeonZone : Zone
 
     protected override void OnUpdate(float deltaTime)
     {
-        // TODO: Check dungeon completion, timeout, etc.
+        if (!_cleared) return;
+
+        // 클리어 후 ClearAutoExitDelay(10초) 대기 → 남은 플레이어 마을로 강제 복귀 → 던전 삭제
+        _clearTimer += deltaTime;
+        if (_clearTimer >= ClearAutoExitDelay)
+            EvictAllAndDestroy();
+    }
+
+    /// <summary>던전에 남은 모든 플레이어를 마을로 복귀시키고 존을 삭제한다.</summary>
+    private void EvictAllAndDestroy()
+    {
+        var sessions = new List<ISession>();
+
+        var playerEntities = World.GetEntities()
+            .With<SessionComponent>()
+            .With<PlayerComponent>()
+            .AsSet();
+
+        foreach (var entity in playerEntities.GetEntities())
+        {
+            ref var session = ref entity.Get<SessionComponent>();
+            if (session.Session.IsConnected)
+                sessions.Add(session.Session);
+        }
+
+        // 세션에게 S2C_LeaveDungeon 전송 — 클라이언트가 마을로 전환
+        foreach (var session in sessions)
+        {
+            session.Send(PacketId.S2C_LeaveDungeon, new S2C_LeaveDungeon { Success = true });
+        }
+
+        Log.Information("Dungeon evicted all players and destroying: ZoneId={ZoneId}", ZoneId);
+
+        // 게임루프 종료 후 ZoneManager에서 제거 (Stop()은 블로킹이므로 별도 스레드로)
+        Task.Run(() => ZoneManager.Instance.RemoveZone(ZoneId));
     }
 }

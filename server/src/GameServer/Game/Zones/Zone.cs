@@ -22,9 +22,10 @@ public abstract class Zone
 {
     public int ZoneId { get; }
     public ZoneType ZoneType { get; }
-    protected World World { get; }
-    protected ISystem<float> Systems { get; }
-    protected AoiGrid AoiGrid { get; } = new AoiGrid();
+    protected World         World         { get; }
+    protected ISystem<float> Systems      { get; }
+    protected AoiGrid        AoiGrid      { get; } = new AoiGrid();
+    protected SubscriberMap  SubscriberMap { get; } = new SubscriberMap();
 
     private readonly Thread _gameThread;
     private volatile bool _isRunning;
@@ -74,8 +75,8 @@ public abstract class Zone
     {
         return new SequentialSystem<float>(
             new MovementSystem(World),
-            new AoiSystem(World, AoiGrid),
-            new BroadcastSystem(World),
+            new AoiSystem(World, AoiGrid, SubscriberMap),
+            new BroadcastSystem(World, SubscriberMap),
             new SessionSystem(World, AoiGrid)
         );
     }
