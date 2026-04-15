@@ -7,6 +7,8 @@ using System;
 public partial class NetworkManager
 {
     public event Action<S2C_EnterDungeonResult> OnEnterDungeonReceived;
+    public event Action<S2C_DungeonClear>       OnDungeonClearReceived;
+    public event Action                         OnLeaveDungeonReceived;
 
     public S2C_EnterTownResult    PendingEnterTownResult    { get; private set; }
     public S2C_EnterDungeonResult PendingEnterDungeonResult { get; private set; }
@@ -46,8 +48,28 @@ public partial class NetworkManager
         }
     }
 
+    [PacketHandler(PacketId.S2C_DungeonClear)]
+    private void OnDungeonClear(byte[] data)
+    {
+        var packet = S2C_DungeonClear.Parser.ParseFrom(data);
+        Debug.Log($"[NetworkManager] DungeonClear: dungeonId={packet.DungeonId}, time={packet.ClearTimeSeconds}s");
+        OnDungeonClearReceived?.Invoke(packet);
+    }
+
+    [PacketHandler(PacketId.S2C_LeaveDungeon)]
+    private void OnLeaveDungeon(byte[] data)
+    {
+        Debug.Log("[NetworkManager] LeaveDungeon received");
+        OnLeaveDungeonReceived?.Invoke();
+    }
+
     public void SendEnterDungeon(int dungeonId)
     {
         Send(PacketId.C2S_EnterDungeon, new C2S_EnterDungeon { DungeonId = dungeonId });
+    }
+
+    public void SendLeaveDungeon()
+    {
+        Send(PacketId.C2S_LeaveDungeon, new C2S_LeaveDungeon());
     }
 }

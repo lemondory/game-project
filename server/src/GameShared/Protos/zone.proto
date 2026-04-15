@@ -29,6 +29,15 @@ message S2C_EnterDungeonResult {
   repeated EntityInfo nearby_entities = 5;
 }
 
+message C2S_LeaveDungeon {
+  // 클라이언트가 명시적으로 던전 퇴장을 요청
+}
+
 message S2C_LeaveDungeon {
   bool success = 1;
+}
+
+message S2C_DungeonClear {
+  int32 dungeon_id = 1;
+  int32 clear_time_seconds = 2; // 클리어 소요 시간
 }

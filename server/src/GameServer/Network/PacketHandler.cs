@@ -48,8 +48,9 @@ public class PacketHandler
     {
         Register(PacketId.C2S_Login,       C2S_Login.Parser,       OnLogin);
         Register(PacketId.C2S_EnterTown,   C2S_EnterTown.Parser,   OnEnterTown);
-        Register(PacketId.C2S_EnterDungeon,C2S_EnterDungeon.Parser,OnEnterDungeon);
-        Register(PacketId.C2S_Move,        C2S_Move.Parser,        OnMove);
+        Register(PacketId.C2S_EnterDungeon, C2S_EnterDungeon.Parser, OnEnterDungeon);
+        Register(PacketId.C2S_LeaveDungeon, C2S_LeaveDungeon.Parser, OnLeaveDungeon);
+        Register(PacketId.C2S_Move,         C2S_Move.Parser,         OnMove);
         Register(PacketId.C2S_Chat,        C2S_Chat.Parser,        OnChat);
         Register(PacketId.C2S_Attack,      C2S_Attack.Parser,      OnAttack);
     }
@@ -315,6 +316,44 @@ public class PacketHandler
             Log.Error(ex, "Session {Id}: enter dungeon failed", session.SessionId);
             session.Send(PacketId.S2C_EnterDungeonResult, new S2C_EnterDungeonResult
                 { Success = false, Message = "Failed to enter dungeon" });
+        }
+    }
+
+    private void OnLeaveDungeon(ISession session, C2S_LeaveDungeon packet)
+    {
+        if (!_sessionToZoneId.TryGetValue(session.SessionId, out var zoneId))
+        {
+            Log.Warning("Session {Id}: LeaveDungeon but not in any zone", session.SessionId);
+            return;
+        }
+
+        var zone = ZoneManager.Instance.GetZone(zoneId);
+        if (zone is not DungeonZone dungeonZone)
+        {
+            Log.Warning("Session {Id}: LeaveDungeon but zone {ZoneId} is not a dungeon", session.SessionId, zoneId);
+            return;
+        }
+
+        if (!_sessionToEntityId.TryGetValue(session.SessionId, out var entityId))
+            return;
+
+        // 던전 파티에서 플레이어 제거
+        dungeonZone.RemovePlayer(session.PlayerId ?? 0);
+
+        // 세션 매핑 정리
+        _sessionToEntityId.Remove(session.SessionId);
+        _sessionToZoneId.Remove(session.SessionId);
+
+        Log.Information("Session {Id}: left dungeon (ZoneId={ZoneId})", session.SessionId, zoneId);
+
+        // 마을 입장 처리
+        FireAndForget(OnEnterTownAsync(session, new C2S_EnterTown()));
+
+        // 마지막 플레이어가 나갔으면 던전 삭제
+        if (dungeonZone.PartyMembers.Count == 0)
+        {
+            Log.Information("Dungeon ZoneId={ZoneId} is empty, destroying", zoneId);
+            Task.Run(() => ZoneManager.Instance.RemoveZone(zoneId));
         }
     }
 

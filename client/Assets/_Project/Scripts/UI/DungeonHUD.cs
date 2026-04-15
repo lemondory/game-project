@@ -26,6 +26,10 @@ public class DungeonHUD : MonoBehaviour
     public GameObject deathPanel;
     public Button returnToTownButton;
 
+    [Header("클리어 UI")]
+    public GameObject clearPanel;
+    public TextMeshProUGUI clearTimeText;
+
     private int _currentHp;
     private int _maxHp;
     private float _combatLogTimer;
@@ -38,9 +42,10 @@ public class DungeonHUD : MonoBehaviour
 
     void Start()
     {
-        // 사망 패널 초기 비활성화
         if (deathPanel != null)
             deathPanel.SetActive(false);
+        if (clearPanel != null)
+            clearPanel.SetActive(false);
 
         // 마을 복귀 버튼 이벤트 연결
         if (returnToTownButton != null)
@@ -120,6 +125,24 @@ public class DungeonHUD : MonoBehaviour
         // 사망 패널 표시
         if (deathPanel != null)
             deathPanel.SetActive(true);
+    }
+
+    public void ShowDungeonClear(int clearTimeSeconds)
+    {
+        // 사망 패널이 열려 있어도 클리어 패널 우선
+        if (deathPanel != null)
+            deathPanel.SetActive(false);
+
+        if (clearPanel != null)
+            clearPanel.SetActive(true);
+
+        int minutes = clearTimeSeconds / 60;
+        int seconds = clearTimeSeconds % 60;
+        if (clearTimeText != null)
+            clearTimeText.text = $"던전 클리어!\n클리어 시간: {minutes:D2}:{seconds:D2}\n잠시 후 마을로 돌아갑니다.";
+
+        ShowCombatLog("DUNGEON CLEAR!");
+        _combatLogTimer = float.MaxValue;
     }
 
     private void OnReturnToTownClicked()

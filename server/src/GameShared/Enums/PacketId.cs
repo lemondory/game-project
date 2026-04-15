@@ -12,7 +12,9 @@ public enum PacketId : ushort
     S2C_EnterTownResult = 1101,
     C2S_EnterDungeon = 1110,
     S2C_EnterDungeonResult = 1111,
-    S2C_LeaveDungeon = 1112,
+    C2S_LeaveDungeon = 1112,
+    S2C_LeaveDungeon = 1113,
+    S2C_DungeonClear = 1114,
 
     // Movement
     C2S_Move = 2000,

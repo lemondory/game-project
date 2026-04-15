@@ -43,13 +43,15 @@ public class DungeonManager : MonoBehaviour
 
         Initialize(data);
 
-        NetworkManager.Instance.OnSpawnReceived   += OnSpawn;
-        NetworkManager.Instance.OnDespawnReceived += OnDespawn;
-        NetworkManager.Instance.OnMoveReceived    += OnMove;
-        NetworkManager.Instance.OnDamageReceived  += OnDamage;
-        NetworkManager.Instance.OnDeathReceived   += OnDeath;
-        NetworkManager.Instance.OnRewardReceived  += OnReward;
-        NetworkManager.Instance.OnLevelUpReceived += OnLevelUp;
+        NetworkManager.Instance.OnSpawnReceived        += OnSpawn;
+        NetworkManager.Instance.OnDespawnReceived      += OnDespawn;
+        NetworkManager.Instance.OnMoveReceived         += OnMove;
+        NetworkManager.Instance.OnDamageReceived       += OnDamage;
+        NetworkManager.Instance.OnDeathReceived        += OnDeath;
+        NetworkManager.Instance.OnRewardReceived       += OnReward;
+        NetworkManager.Instance.OnLevelUpReceived      += OnLevelUp;
+        NetworkManager.Instance.OnDungeonClearReceived += OnDungeonClear;
+        NetworkManager.Instance.OnLeaveDungeonReceived += OnLeaveDungeon;
     }
 
     void Update()
@@ -62,13 +64,15 @@ public class DungeonManager : MonoBehaviour
     void OnDestroy()
     {
         if (NetworkManager.Instance == null) return;
-        NetworkManager.Instance.OnSpawnReceived   -= OnSpawn;
-        NetworkManager.Instance.OnDespawnReceived -= OnDespawn;
-        NetworkManager.Instance.OnMoveReceived    -= OnMove;
-        NetworkManager.Instance.OnDamageReceived  -= OnDamage;
-        NetworkManager.Instance.OnDeathReceived   -= OnDeath;
-        NetworkManager.Instance.OnRewardReceived  -= OnReward;
-        NetworkManager.Instance.OnLevelUpReceived -= OnLevelUp;
+        NetworkManager.Instance.OnSpawnReceived        -= OnSpawn;
+        NetworkManager.Instance.OnDespawnReceived      -= OnDespawn;
+        NetworkManager.Instance.OnMoveReceived         -= OnMove;
+        NetworkManager.Instance.OnDamageReceived       -= OnDamage;
+        NetworkManager.Instance.OnDeathReceived        -= OnDeath;
+        NetworkManager.Instance.OnRewardReceived       -= OnReward;
+        NetworkManager.Instance.OnLevelUpReceived      -= OnLevelUp;
+        NetworkManager.Instance.OnDungeonClearReceived -= OnDungeonClear;
+        NetworkManager.Instance.OnLeaveDungeonReceived -= OnLeaveDungeon;
     }
 
     // ── 초기화 ──────────────────────────────────────────────────────────────
@@ -307,10 +311,26 @@ public class DungeonManager : MonoBehaviour
 
     public void LeaveDungeon()
     {
-        // 던전 나가기: 마을 재입장 요청
-        NetworkManager.Instance.Send(GameShared.Enums.PacketId.C2S_EnterTown,
-            new C2S_EnterTown());
-        Debug.Log("DungeonManager: Leaving dungeon...");
+        // C2S_LeaveDungeon → 서버가 파티 정리 후 S2C_LeaveDungeon 응답 → 마을 씬 전환
+        NetworkManager.Instance.SendLeaveDungeon();
+        Debug.Log("[DungeonManager] LeaveDungeon requested");
+    }
+
+    private void OnDungeonClear(GameShared.Proto.S2C_DungeonClear packet)
+    {
+        Debug.Log($"[DungeonManager] Dungeon cleared! time={packet.ClearTimeSeconds}s");
+        if (DungeonHUD.Instance != null)
+            DungeonHUD.Instance.ShowDungeonClear(packet.ClearTimeSeconds);
+        // 서버가 10초 후 S2C_LeaveDungeon을 보내 자동 퇴장시킴
+    }
+
+    private void OnLeaveDungeon()
+    {
+        Debug.Log("[DungeonManager] Received LeaveDungeon — returning to town");
+        if (LoadingScreen.Instance != null)
+            LoadingScreen.Instance.LoadScene("Town");
+        else
+            UnityEngine.SceneManagement.SceneManager.LoadScene("Town");
     }
 
     private static Vector3 ToUnity(GameShared.Proto.Vec3 v)
