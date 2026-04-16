@@ -3,8 +3,7 @@ using UnityEngine.UI;
 using TMPro;
 
 /// <summary>
-/// 던전 HUD — 플레이어 HP바, 경험치, 골드, 전투 정보를 표시한다.
-/// Dungeon 씬의 Canvas 하위에 배치하고 DungeonManager가 이벤트를 통해 업데이트한다.
+/// 던전 HUD — 플레이어 HP바, 타이머, 킬카운트, 전투 로그를 표시한다.
 /// </summary>
 public class DungeonHUD : MonoBehaviour
 {
@@ -19,6 +18,10 @@ public class DungeonHUD : MonoBehaviour
     public TextMeshProUGUI expText;
     public TextMeshProUGUI goldText;
 
+    [Header("던전 상태")]
+    public TextMeshProUGUI timerText;     // 남은 시간 카운트다운
+    public TextMeshProUGUI killCountText; // 처치 수 (Timed 던전)
+
     [Header("전투 로그")]
     public TextMeshProUGUI combatLogText;
 
@@ -26,12 +29,11 @@ public class DungeonHUD : MonoBehaviour
     public GameObject deathPanel;
     public Button returnToTownButton;
 
-    [Header("클리어 UI")]
-    public GameObject clearPanel;
-    public TextMeshProUGUI clearTimeText;
+    [Header("결과 UI")]
+    public GameObject resultPanel;
+    public TextMeshProUGUI resultTitleText; // DUNGEON CLEAR! / TIME OVER
+    public TextMeshProUGUI resultDetailText;
 
-    private int _currentHp;
-    private int _maxHp;
     private float _combatLogTimer;
     private const float CombatLogDuration = 3f;
 
@@ -42,19 +44,15 @@ public class DungeonHUD : MonoBehaviour
 
     void Start()
     {
-        if (deathPanel != null)
-            deathPanel.SetActive(false);
-        if (clearPanel != null)
-            clearPanel.SetActive(false);
+        if (deathPanel != null)   deathPanel.SetActive(false);
+        if (resultPanel != null)  resultPanel.SetActive(false);
 
-        // 마을 복귀 버튼 이벤트 연결
         if (returnToTownButton != null)
             returnToTownButton.onClick.AddListener(OnReturnToTownClicked);
     }
 
     void Update()
     {
-        // 전투 로그 자동 숨김
         if (_combatLogTimer > 0f)
         {
             _combatLogTimer -= Time.deltaTime;
@@ -63,35 +61,53 @@ public class DungeonHUD : MonoBehaviour
         }
     }
 
+    // ── HP ──────────────────────────────────────────────────────
+
     public void SetHealth(int currentHp, int maxHp)
     {
-        _currentHp = currentHp;
-        _maxHp = maxHp;
-
         if (hpFillImage != null)
             hpFillImage.fillAmount = maxHp > 0 ? (float)currentHp / maxHp : 0f;
-
         if (hpText != null)
             hpText.text = $"{currentHp} / {maxHp}";
     }
 
+    // ── 정보 ─────────────────────────────────────────────────────
+
     public void SetLevel(int level)
     {
-        if (levelText != null)
-            levelText.text = $"Lv.{level}";
+        if (levelText != null) levelText.text = $"Lv.{level}";
     }
 
     public void SetExp(int currentExp, int totalExp)
     {
-        if (expText != null)
-            expText.text = $"EXP: {currentExp}";
+        if (expText != null) expText.text = $"EXP: {currentExp}";
     }
 
     public void SetGold(int gold)
     {
-        if (goldText != null)
-            goldText.text = $"Gold: {gold}";
+        if (goldText != null) goldText.text = $"Gold: {gold}";
     }
+
+    // ── 타이머 / 킬카운트 ────────────────────────────────────────
+
+    /// <summary>서버에서 1초마다 수신되는 타이머 업데이트.</summary>
+    public void UpdateTimer(int remainingSeconds, int killCount)
+    {
+        if (timerText != null)
+        {
+            int m = remainingSeconds / 60;
+            int s = remainingSeconds % 60;
+            timerText.text = $"{m:D2}:{s:D2}";
+
+            // 30초 이하이면 빨간색으로 강조
+            timerText.color = remainingSeconds <= 30 ? Color.red : Color.white;
+        }
+
+        if (killCountText != null)
+            killCountText.text = $"Kill: {killCount}";
+    }
+
+    // ── 전투 로그 ────────────────────────────────────────────────
 
     public void ShowCombatLog(string message)
     {
@@ -102,48 +118,54 @@ public class DungeonHUD : MonoBehaviour
         }
     }
 
-    public void ShowDamage(int damage)
-    {
-        ShowCombatLog($"-{damage} HP");
-    }
+    public void ShowDamage(int damage)    => ShowCombatLog($"-{damage} HP");
+    public void ShowReward(int exp, int gold) => ShowCombatLog($"+{exp} EXP  +{gold} Gold");
+    public void ShowLevelUp(int level)    => ShowCombatLog($"LEVEL UP! Lv.{level}");
 
-    public void ShowReward(int expReward, int goldReward)
-    {
-        ShowCombatLog($"+{expReward} EXP  +{goldReward} Gold");
-    }
-
-    public void ShowLevelUp(int newLevel)
-    {
-        ShowCombatLog($"LEVEL UP! Lv.{newLevel}");
-    }
+    // ── 사망 ─────────────────────────────────────────────────────
 
     public void ShowPlayerDeath()
     {
         ShowCombatLog("YOU DIED");
         _combatLogTimer = float.MaxValue;
-
-        // 사망 패널 표시
-        if (deathPanel != null)
-            deathPanel.SetActive(true);
+        if (deathPanel != null) deathPanel.SetActive(true);
     }
 
-    public void ShowDungeonClear(int clearTimeSeconds)
+    // ── 던전 결과 ────────────────────────────────────────────────
+
+    /// <summary>
+    /// 던전 종료 결과 패널 표시.
+    /// isCleared=true  → 클리어 (KillAll 전멸 or Timed 시간 종료)
+    /// isCleared=false → 실패 (KillAll 시간 초과)
+    /// </summary>
+    public void ShowDungeonResult(bool isCleared, int timeSeconds, int killCount)
     {
-        // 사망 패널이 열려 있어도 클리어 패널 우선
-        if (deathPanel != null)
-            deathPanel.SetActive(false);
+        if (deathPanel != null) deathPanel.SetActive(false);
 
-        if (clearPanel != null)
-            clearPanel.SetActive(true);
+        if (resultPanel != null) resultPanel.SetActive(true);
 
-        int minutes = clearTimeSeconds / 60;
-        int seconds = clearTimeSeconds % 60;
-        if (clearTimeText != null)
-            clearTimeText.text = $"던전 클리어!\n클리어 시간: {minutes:D2}:{seconds:D2}\n잠시 후 마을로 돌아갑니다.";
+        int m = timeSeconds / 60;
+        int s = timeSeconds % 60;
 
-        ShowCombatLog("DUNGEON CLEAR!");
+        if (resultTitleText != null)
+        {
+            resultTitleText.text  = isCleared ? "DUNGEON CLEAR!" : "TIME OVER";
+            resultTitleText.color = isCleared ? Color.yellow : Color.red;
+        }
+
+        if (resultDetailText != null)
+        {
+            if (isCleared)
+                resultDetailText.text = $"클리어 시간: {m:D2}:{s:D2}\n처치: {killCount}\n잠시 후 마을로 돌아갑니다.";
+            else
+                resultDetailText.text = $"제한 시간 초과\n처치: {killCount}\n잠시 후 마을로 돌아갑니다.";
+        }
+
+        ShowCombatLog(isCleared ? "DUNGEON CLEAR!" : "TIME OVER...");
         _combatLogTimer = float.MaxValue;
     }
+
+    // ── 버튼 ─────────────────────────────────────────────────────
 
     private void OnReturnToTownClicked()
     {

@@ -132,3 +132,20 @@ public enum ObjectType
     /// <summary>최대값 (for loop 용)</summary>
     Max = 4
 }
+
+/// <summary>
+/// Auto-generated enum from enums.xlsx
+/// </summary>
+public enum DungeonType
+{
+    /// <summary>사용 안함</summary>
+    None = -1,
+
+    /// <summary>몬스터 전멸 클리어</summary>
+    KillAll = 0,
+    /// <summary>제한시간 클리어</summary>
+    Timed = 1,
+
+    /// <summary>최대값 (for loop 용)</summary>
+    Max = 2
+}

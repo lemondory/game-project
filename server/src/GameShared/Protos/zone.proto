@@ -39,5 +39,12 @@ message S2C_LeaveDungeon {
 
 message S2C_DungeonClear {
   int32 dungeon_id = 1;
-  int32 clear_time_seconds = 2; // 클리어 소요 시간
+  int32 clear_time_seconds = 2; // 클리어 소요 시간 (KillAll: 실제 소요, Timed: 제한 시간)
+  bool  is_cleared = 3;         // true=클리어, false=시간 초과 실패 (KillAll 전용)
+  int32 kill_count = 4;         // 처치한 몬스터 수
+}
+
+message S2C_DungeonTimerUpdate {
+  int32 remaining_seconds = 1;  // 남은 시간 (초)
+  int32 kill_count = 2;         // 현재 킬카운트
 }

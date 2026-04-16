@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using MessagePack;
 using GameShared.Utils;
+using GameShared.Generated.Enums;
 
 namespace GameShared.Generated.Data;
 
@@ -32,8 +33,20 @@ public partial class DungeonData
     [Key(4)]
     public int MaxPlayers { get; set; }
 
-    /// <summary>몬스터ID_1</summary>
+    /// <summary>던전타입</summary>
     [Key(5)]
+    public DungeonType DungeonType { get; set; }
+
+    /// <summary>제한시간(초)</summary>
+    [Key(6)]
+    public int TimeLimitSeconds { get; set; }
+
+    /// <summary>리스폰딜레이(초)</summary>
+    [Key(7)]
+    public int RespawnDelaySeconds { get; set; }
+
+    /// <summary>몬스터ID_1</summary>
+    [Key(8)]
     public int[] MonsterIds { get; set; } = System.Array.Empty<int>();
 
 }

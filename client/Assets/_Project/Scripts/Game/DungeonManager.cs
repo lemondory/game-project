@@ -43,15 +43,16 @@ public class DungeonManager : MonoBehaviour
 
         Initialize(data);
 
-        NetworkManager.Instance.OnSpawnReceived        += OnSpawn;
-        NetworkManager.Instance.OnDespawnReceived      += OnDespawn;
-        NetworkManager.Instance.OnMoveReceived         += OnMove;
-        NetworkManager.Instance.OnDamageReceived       += OnDamage;
-        NetworkManager.Instance.OnDeathReceived        += OnDeath;
-        NetworkManager.Instance.OnRewardReceived       += OnReward;
-        NetworkManager.Instance.OnLevelUpReceived      += OnLevelUp;
-        NetworkManager.Instance.OnDungeonClearReceived += OnDungeonClear;
-        NetworkManager.Instance.OnLeaveDungeonReceived += OnLeaveDungeon;
+        NetworkManager.Instance.OnSpawnReceived               += OnSpawn;
+        NetworkManager.Instance.OnDespawnReceived             += OnDespawn;
+        NetworkManager.Instance.OnMoveReceived                += OnMove;
+        NetworkManager.Instance.OnDamageReceived              += OnDamage;
+        NetworkManager.Instance.OnDeathReceived               += OnDeath;
+        NetworkManager.Instance.OnRewardReceived              += OnReward;
+        NetworkManager.Instance.OnLevelUpReceived             += OnLevelUp;
+        NetworkManager.Instance.OnDungeonClearReceived        += OnDungeonClear;
+        NetworkManager.Instance.OnLeaveDungeonReceived        += OnLeaveDungeon;
+        NetworkManager.Instance.OnDungeonTimerUpdateReceived  += OnDungeonTimerUpdate;
     }
 
     void Update()
@@ -64,15 +65,16 @@ public class DungeonManager : MonoBehaviour
     void OnDestroy()
     {
         if (NetworkManager.Instance == null) return;
-        NetworkManager.Instance.OnSpawnReceived        -= OnSpawn;
-        NetworkManager.Instance.OnDespawnReceived      -= OnDespawn;
-        NetworkManager.Instance.OnMoveReceived         -= OnMove;
-        NetworkManager.Instance.OnDamageReceived       -= OnDamage;
-        NetworkManager.Instance.OnDeathReceived        -= OnDeath;
-        NetworkManager.Instance.OnRewardReceived       -= OnReward;
-        NetworkManager.Instance.OnLevelUpReceived      -= OnLevelUp;
-        NetworkManager.Instance.OnDungeonClearReceived -= OnDungeonClear;
-        NetworkManager.Instance.OnLeaveDungeonReceived -= OnLeaveDungeon;
+        NetworkManager.Instance.OnSpawnReceived               -= OnSpawn;
+        NetworkManager.Instance.OnDespawnReceived             -= OnDespawn;
+        NetworkManager.Instance.OnMoveReceived                -= OnMove;
+        NetworkManager.Instance.OnDamageReceived              -= OnDamage;
+        NetworkManager.Instance.OnDeathReceived               -= OnDeath;
+        NetworkManager.Instance.OnRewardReceived              -= OnReward;
+        NetworkManager.Instance.OnLevelUpReceived             -= OnLevelUp;
+        NetworkManager.Instance.OnDungeonClearReceived        -= OnDungeonClear;
+        NetworkManager.Instance.OnLeaveDungeonReceived        -= OnLeaveDungeon;
+        NetworkManager.Instance.OnDungeonTimerUpdateReceived  -= OnDungeonTimerUpdate;
     }
 
     // ── 초기화 ──────────────────────────────────────────────────────────────
@@ -318,10 +320,15 @@ public class DungeonManager : MonoBehaviour
 
     private void OnDungeonClear(GameShared.Proto.S2C_DungeonClear packet)
     {
-        Debug.Log($"[DungeonManager] Dungeon cleared! time={packet.ClearTimeSeconds}s");
+        Debug.Log($"[DungeonManager] Dungeon finished! cleared={packet.IsCleared}, kills={packet.KillCount}, time={packet.ClearTimeSeconds}s");
         if (DungeonHUD.Instance != null)
-            DungeonHUD.Instance.ShowDungeonClear(packet.ClearTimeSeconds);
-        // 서버가 10초 후 S2C_LeaveDungeon을 보내 자동 퇴장시킴
+            DungeonHUD.Instance.ShowDungeonResult(packet.IsCleared, packet.ClearTimeSeconds, packet.KillCount);
+    }
+
+    private void OnDungeonTimerUpdate(GameShared.Proto.S2C_DungeonTimerUpdate packet)
+    {
+        if (DungeonHUD.Instance != null)
+            DungeonHUD.Instance.UpdateTimer(packet.RemainingSeconds, packet.KillCount);
     }
 
     private void OnLeaveDungeon()

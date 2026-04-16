@@ -6,9 +6,10 @@ using System;
 
 public partial class NetworkManager
 {
-    public event Action<S2C_EnterDungeonResult> OnEnterDungeonReceived;
-    public event Action<S2C_DungeonClear>       OnDungeonClearReceived;
-    public event Action                         OnLeaveDungeonReceived;
+    public event Action<S2C_EnterDungeonResult>  OnEnterDungeonReceived;
+    public event Action<S2C_DungeonClear>        OnDungeonClearReceived;
+    public event Action                          OnLeaveDungeonReceived;
+    public event Action<S2C_DungeonTimerUpdate>  OnDungeonTimerUpdateReceived;
 
     public S2C_EnterTownResult    PendingEnterTownResult    { get; private set; }
     public S2C_EnterDungeonResult PendingEnterDungeonResult { get; private set; }
@@ -61,6 +62,13 @@ public partial class NetworkManager
     {
         Debug.Log("[NetworkManager] LeaveDungeon received");
         OnLeaveDungeonReceived?.Invoke();
+    }
+
+    [PacketHandler(PacketId.S2C_DungeonTimerUpdate)]
+    private void OnDungeonTimerUpdate(byte[] data)
+    {
+        var packet = S2C_DungeonTimerUpdate.Parser.ParseFrom(data);
+        OnDungeonTimerUpdateReceived?.Invoke(packet);
     }
 
     public void SendEnterDungeon(int dungeonId)

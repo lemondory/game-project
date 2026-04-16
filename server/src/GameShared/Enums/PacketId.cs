@@ -15,6 +15,7 @@ public enum PacketId : ushort
     C2S_LeaveDungeon = 1112,
     S2C_LeaveDungeon = 1113,
     S2C_DungeonClear = 1114,
+    S2C_DungeonTimerUpdate = 1115,
 
     // Movement
     C2S_Move = 2000,
