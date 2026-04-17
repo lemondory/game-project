@@ -53,6 +53,8 @@ public class PacketHandler
         Register(PacketId.C2S_Move,         C2S_Move.Parser,         OnMove);
         Register(PacketId.C2S_Chat,        C2S_Chat.Parser,        OnChat);
         Register(PacketId.C2S_Attack,      C2S_Attack.Parser,      OnAttack);
+        Register(PacketId.C2S_EnterField,  C2S_EnterField.Parser,  OnEnterField);
+        Register(PacketId.C2S_LeaveField,  C2S_LeaveField.Parser,  OnLeaveField);
     }
 
     private void Register<T>(PacketId packetId, MessageParser<T> parser, Action<ISession, T> handler)
@@ -434,6 +436,116 @@ public class PacketHandler
         {
             Log.Warning("Session {Id}: attack in non-combat zone", session.SessionId);
         }
+    }
+
+    // ── Field Handlers ───────────────────────────────────────────────────────
+
+    private void OnEnterField(ISession session, C2S_EnterField packet)
+    {
+        FireAndForget(OnEnterFieldAsync(session, packet));
+    }
+
+    private async Task OnEnterFieldAsync(ISession session, C2S_EnterField packet)
+    {
+        if (session.PlayerId == null || string.IsNullOrEmpty(session.PlayerName))
+        {
+            session.Send(PacketId.S2C_EnterFieldResult, new S2C_EnterFieldResult
+                { Success = false, Message = "Not logged in" });
+            return;
+        }
+
+        var fieldZone = ZoneManager.Instance.GetFieldZone(packet.FieldId);
+        if (fieldZone == null)
+        {
+            session.Send(PacketId.S2C_EnterFieldResult, new S2C_EnterFieldResult
+                { Success = false, Message = $"Field {packet.FieldId} not found" });
+            return;
+        }
+
+        // 쿼터 로드 및 리셋 체크
+        var (dailyRemaining, weeklyRemaining) = await fieldZone.LoadQuotaAsync(session.PlayerId.Value);
+
+        if (dailyRemaining <= 0)
+        {
+            session.Send(PacketId.S2C_EnterFieldResult, new S2C_EnterFieldResult
+                { Success = false, Message = "일일 입장 가능 시간이 소진되었습니다." });
+            return;
+        }
+        if (weeklyRemaining <= 0)
+        {
+            session.Send(PacketId.S2C_EnterFieldResult, new S2C_EnterFieldResult
+                { Success = false, Message = "주간 입장 가능 시간이 소진되었습니다." });
+            return;
+        }
+
+        // 마을에서 나가기 처리 (현재 마을에 있다고 가정)
+        if (_sessionToZoneId.TryGetValue(session.SessionId, out var oldZoneId))
+        {
+            var oldZone = ZoneManager.Instance.GetZone(oldZoneId);
+            if (oldZone is TownZone townZoneOld)
+            {
+                if (_sessionToEntityId.TryGetValue(session.SessionId, out var oldEntityId))
+                    townZoneOld.RemoveEntityById(oldEntityId);
+            }
+        }
+
+        var entity   = fieldZone.AddPlayer(session, session.PlayerId.Value, session.PlayerName);
+        var entityId = entity.Get<Game.Components.EntityIdComponent>().EntityId;
+
+        _sessionToEntityId[session.SessionId] = entityId;
+        _sessionToZoneId[session.SessionId]   = fieldZone.ZoneId;
+
+        var nearbyEntities = fieldZone.GetNearbyEntityInfos(session);
+
+        var interest = entity.Get<Game.Components.InterestComponent>();
+        foreach (var nearby in nearbyEntities)
+            interest.VisibleEntityIds.Add(nearby.EntityId);
+
+        var result = new S2C_EnterFieldResult
+        {
+            Success                = true,
+            Message                = "Entered field",
+            EntityId               = entityId,
+            Position               = new Vec3 { X = 0, Y = 0, Z = 0 },
+            DailyRemainingSeconds  = dailyRemaining,
+            WeeklyRemainingSeconds = weeklyRemaining
+        };
+        result.NearbyEntities.AddRange(nearbyEntities);
+        session.Send(PacketId.S2C_EnterFieldResult, result);
+
+        Log.Information("Session {Id}: entered field (EntityId={EntityId}, FieldId={FieldId}, DailyRemaining={Daily}s)",
+            session.SessionId, entityId, packet.FieldId, dailyRemaining);
+    }
+
+    private void OnLeaveField(ISession session, C2S_LeaveField packet)
+    {
+        FireAndForget(OnLeaveFieldAsync(session));
+    }
+
+    private async Task OnLeaveFieldAsync(ISession session)
+    {
+        if (!_sessionToZoneId.TryGetValue(session.SessionId, out var zoneId))
+        {
+            Log.Warning("Session {Id}: LeaveField but not in any zone", session.SessionId);
+            return;
+        }
+
+        var zone = ZoneManager.Instance.GetZone(zoneId);
+        if (zone is not TimeLimitedFieldZone fieldZone)
+        {
+            Log.Warning("Session {Id}: LeaveField but zone {ZoneId} is not a field", session.SessionId, zoneId);
+            return;
+        }
+
+        await fieldZone.RemovePlayerAsync(session.PlayerId ?? 0);
+
+        _sessionToEntityId.Remove(session.SessionId);
+        _sessionToZoneId.Remove(session.SessionId);
+
+        Log.Information("Session {Id}: left field (ZoneId={ZoneId})", session.SessionId, zoneId);
+
+        // 마을로 복귀
+        FireAndForget(OnEnterTownAsync(session, new C2S_EnterTown()));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

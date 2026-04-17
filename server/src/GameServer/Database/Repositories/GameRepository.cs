@@ -196,4 +196,80 @@ public class GameRepository
             return false;
         }
     }
+
+    // ── 시간제 사냥터 쿼터 ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// 플레이어의 필드 쿼터를 조회한다.
+    /// 없으면 null 반환 → 호출자가 기본값 0으로 처리.
+    /// 일간/주간 리셋 체크는 서버에서 처리한다.
+    /// </summary>
+    public async Task<PlayerFieldQuota?> GetFieldQuotaAsync(long playerId, int fieldId)
+    {
+        try
+        {
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            const string sql = @"
+                SELECT quota_id as QuotaId, player_id as PlayerId, field_id as FieldId,
+                       daily_used_seconds as DailyUsedSeconds, weekly_used_seconds as WeeklyUsedSeconds,
+                       last_daily_reset as LastDailyReset, last_weekly_reset as LastWeeklyReset,
+                       last_entered_at as LastEnteredAt, last_saved_at as LastSavedAt
+                FROM player_field_quota
+                WHERE player_id = @PlayerId AND field_id = @FieldId";
+
+            return await connection.QuerySingleOrDefaultAsync<PlayerFieldQuota>(sql,
+                new { PlayerId = playerId, FieldId = fieldId });
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "GetFieldQuota failed: playerId={PlayerId}, fieldId={FieldId}", playerId, fieldId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 쿼터를 저장한다 (UPSERT). 리셋 날짜도 함께 저장.
+    /// </summary>
+    public async Task<bool> SaveFieldQuotaAsync(long playerId, int fieldId,
+        int dailyUsedSeconds, int weeklyUsedSeconds,
+        DateTime lastDailyReset, DateTime lastWeeklyReset)
+    {
+        try
+        {
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            const string sql = @"
+                INSERT INTO player_field_quota
+                    (player_id, field_id, daily_used_seconds, weekly_used_seconds,
+                     last_daily_reset, last_weekly_reset, last_saved_at)
+                VALUES
+                    (@PlayerId, @FieldId, @DailyUsedSeconds, @WeeklyUsedSeconds,
+                     @LastDailyReset, @LastWeeklyReset, CURRENT_TIMESTAMP)
+                ON CONFLICT (player_id, field_id) DO UPDATE SET
+                    daily_used_seconds  = EXCLUDED.daily_used_seconds,
+                    weekly_used_seconds = EXCLUDED.weekly_used_seconds,
+                    last_daily_reset    = EXCLUDED.last_daily_reset,
+                    last_weekly_reset   = EXCLUDED.last_weekly_reset,
+                    last_saved_at       = CURRENT_TIMESTAMP";
+
+            var affected = await connection.ExecuteAsync(sql, new
+            {
+                PlayerId           = playerId,
+                FieldId            = fieldId,
+                DailyUsedSeconds   = dailyUsedSeconds,
+                WeeklyUsedSeconds  = weeklyUsedSeconds,
+                LastDailyReset     = lastDailyReset.Date,
+                LastWeeklyReset    = lastWeeklyReset.Date
+            });
+            return affected > 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "SaveFieldQuota failed: playerId={PlayerId}, fieldId={FieldId}", playerId, fieldId);
+            return false;
+        }
+    }
 }

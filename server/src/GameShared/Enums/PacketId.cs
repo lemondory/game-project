@@ -17,6 +17,13 @@ public enum PacketId : ushort
     S2C_DungeonClear = 1114,
     S2C_DungeonTimerUpdate = 1115,
 
+    // Time-Limited Field
+    C2S_EnterField       = 1200,
+    S2C_EnterFieldResult = 1201,
+    C2S_LeaveField       = 1202,
+    S2C_LeaveField       = 1203,
+    S2C_FieldQuotaUpdate = 1204,
+
     // Movement
     C2S_Move = 2000,
     S2C_Move = 2001,

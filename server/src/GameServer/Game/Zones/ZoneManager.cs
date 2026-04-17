@@ -18,6 +18,10 @@ public class ZoneManager
     private TownZone? _townZone;
     private int _nextDungeonZoneId = 1000;
 
+    // 필드 존: fieldId → TimeLimitedFieldZone
+    private readonly Dictionary<int, TimeLimitedFieldZone> _fieldZones = new();
+    private int _nextFieldZoneId = 2000;
+
     private ZoneManager()
     {
     }
@@ -32,7 +36,58 @@ public class ZoneManager
         _zones[_townZone.ZoneId] = _townZone;
         _townZone.Start();
 
-        Log.Information("ZoneManager initialized with TownZone");
+        // 모든 시간제 필드 존 생성 및 시작
+        InitializeFieldZones();
+
+        Log.Information("ZoneManager initialized");
+    }
+
+    private void InitializeFieldZones()
+    {
+        var allFields = GameDataManager.TimeLimitedFieldData.GetAll();
+        foreach (var fieldData in allFields)
+        {
+            var zoneId = Interlocked.Increment(ref _nextFieldZoneId);
+            var fieldZone = new TimeLimitedFieldZone(zoneId, fieldData.FieldId);
+            _zones[zoneId] = fieldZone;
+            _fieldZones[fieldData.FieldId] = fieldZone;
+
+            // 초기 몬스터 스폰 (게임루프 시작 전)
+            SpawnMonstersForField(fieldZone, fieldData);
+
+            fieldZone.Start();
+            Log.Information("TimeLimitedFieldZone started: ZoneId={ZoneId}, FieldId={FieldId}, Name={Name}",
+                zoneId, fieldData.FieldId, fieldData.Name);
+        }
+    }
+
+    private void SpawnMonstersForField(TimeLimitedFieldZone zone, GameShared.Generated.Data.TimeLimitedFieldData fieldData)
+    {
+        var monsterIds = fieldData.MonsterIds.Where(id => id > 0).ToArray();
+        if (monsterIds.Length == 0) return;
+
+        var random = new Random();
+        for (int i = 0; i < monsterIds.Length; i++)
+        {
+            int col = i % 5;
+            int row = i / 5;
+            var position = new GameShared.Utils.Vector3(
+                (col - 2) * 5f + (float)(random.NextDouble() * 2 - 1),
+                0,
+                row * 5f + 5f + (float)(random.NextDouble() * 2 - 1)
+            );
+            zone.SpawnMonster(monsterIds[i], position);
+        }
+
+        Log.Information("Spawned {Count} monsters in field ZoneId={ZoneId} (FieldId={FieldId})",
+            monsterIds.Length, zone.ZoneId, zone.FieldId);
+    }
+
+    /// <summary>FieldId로 시간제 필드 존을 반환한다.</summary>
+    public TimeLimitedFieldZone? GetFieldZone(int fieldId)
+    {
+        _fieldZones.TryGetValue(fieldId, out var zone);
+        return zone;
     }
 
     /// <summary>

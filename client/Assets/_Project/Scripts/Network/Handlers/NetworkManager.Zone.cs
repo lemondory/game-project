@@ -11,6 +11,13 @@ public partial class NetworkManager
     public event Action                          OnLeaveDungeonReceived;
     public event Action<S2C_DungeonTimerUpdate>  OnDungeonTimerUpdateReceived;
 
+    // 시간제 사냥터
+    public event Action<S2C_EnterFieldResult>   OnEnterFieldReceived;
+    public event Action                         OnLeaveFieldReceived;
+    public event Action<S2C_FieldQuotaUpdate>   OnFieldQuotaUpdateReceived;
+
+    public S2C_EnterFieldResult PendingEnterFieldResult { get; private set; }
+
     public S2C_EnterTownResult    PendingEnterTownResult    { get; private set; }
     public S2C_EnterDungeonResult PendingEnterDungeonResult { get; private set; }
 
@@ -71,6 +78,40 @@ public partial class NetworkManager
         OnDungeonTimerUpdateReceived?.Invoke(packet);
     }
 
+    [PacketHandler(PacketId.S2C_EnterFieldResult)]
+    private void OnEnterFieldResult(byte[] data)
+    {
+        var packet = S2C_EnterFieldResult.Parser.ParseFrom(data);
+        Debug.Log($"[NetworkManager] EnterField: success={packet.Success}, entityId={packet.EntityId}");
+        if (packet.Success)
+        {
+            PendingEnterFieldResult = packet;
+            if (LoadingScreen.Instance != null)
+                LoadingScreen.Instance.LoadScene("Field");
+            else
+                UnityEngine.SceneManagement.SceneManager.LoadScene("Field");
+        }
+        else
+        {
+            Debug.LogWarning($"[NetworkManager] EnterField failed: {packet.Message}");
+            OnEnterFieldReceived?.Invoke(packet);
+        }
+    }
+
+    [PacketHandler(PacketId.S2C_LeaveField)]
+    private void OnLeaveField(byte[] data)
+    {
+        Debug.Log("[NetworkManager] LeaveField received");
+        OnLeaveFieldReceived?.Invoke();
+    }
+
+    [PacketHandler(PacketId.S2C_FieldQuotaUpdate)]
+    private void OnFieldQuotaUpdate(byte[] data)
+    {
+        var packet = S2C_FieldQuotaUpdate.Parser.ParseFrom(data);
+        OnFieldQuotaUpdateReceived?.Invoke(packet);
+    }
+
     public void SendEnterDungeon(int dungeonId)
     {
         Send(PacketId.C2S_EnterDungeon, new C2S_EnterDungeon { DungeonId = dungeonId });
@@ -79,5 +120,15 @@ public partial class NetworkManager
     public void SendLeaveDungeon()
     {
         Send(PacketId.C2S_LeaveDungeon, new C2S_LeaveDungeon());
+    }
+
+    public void SendEnterField(int fieldId)
+    {
+        Send(PacketId.C2S_EnterField, new C2S_EnterField { FieldId = fieldId });
+    }
+
+    public void SendLeaveField()
+    {
+        Send(PacketId.C2S_LeaveField, new C2S_LeaveField());
     }
 }

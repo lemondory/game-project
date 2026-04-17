@@ -44,6 +44,7 @@ public sealed class GameDataManager : DataManagerBase
     private MonsterDataTable _monsterData = new();
     private SkillDataTable _skillData = new();
     private StringsTable _strings = new();
+    private TimeLimitedFieldDataTable _timeLimitedFieldData = new();
 
     /// <summary>Access to CharacterClassData</summary>
     public static CharacterClassDataTable CharacterClassData => Instance._characterClassData;
@@ -66,6 +67,9 @@ public sealed class GameDataManager : DataManagerBase
     /// <summary>Access to Strings</summary>
     public static StringsTable Strings => Instance._strings;
 
+    /// <summary>Access to TimeLimitedFieldData</summary>
+    public static TimeLimitedFieldDataTable TimeLimitedFieldData => Instance._timeLimitedFieldData;
+
     protected override void LoadAllTables()
     {
         _characterClassData = LoadTable<CharacterClassDataTable>("CharacterClassData.bytes");
@@ -75,6 +79,7 @@ public sealed class GameDataManager : DataManagerBase
         _monsterData = LoadTable<MonsterDataTable>("MonsterData.bytes");
         _skillData = LoadTable<SkillDataTable>("SkillData.bytes");
         _strings = LoadTable<StringsTable>("Strings.bytes");
+        _timeLimitedFieldData = LoadTable<TimeLimitedFieldDataTable>("TimeLimitedFieldData.bytes");
     }
 
     protected override void ClearAllTables()
@@ -86,5 +91,6 @@ public sealed class GameDataManager : DataManagerBase
         _monsterData = new MonsterDataTable();
         _skillData = new SkillDataTable();
         _strings = new StringsTable();
+        _timeLimitedFieldData = new TimeLimitedFieldDataTable();
     }
 }

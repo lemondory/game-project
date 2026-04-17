@@ -56,6 +56,23 @@ public class TownZone : Zone
     }
 
     /// <summary>특정 세션의 현재 위치를 반환한다. 없으면 null.</summary>
+    /// <summary>EntityId로 플레이어 엔티티를 존에서 제거한다.</summary>
+    public void RemoveEntityById(long entityId)
+    {
+        EnqueueAction(() =>
+        {
+            foreach (var entity in _entitiesWithId.GetEntities())
+            {
+                if (!entity.IsAlive) continue;
+                ref var eid = ref entity.Get<EntityIdComponent>();
+                if (eid.EntityId != entityId) continue;
+                AoiGrid.Remove(entityId);
+                entity.Dispose();
+                break;
+            }
+        });
+    }
+
     public Vector3? GetPlayerPosition(ISession session)
     {
         foreach (var entity in _entitiesWithPlayer.GetEntities())
