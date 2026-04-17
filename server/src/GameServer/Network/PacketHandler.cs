@@ -427,15 +427,14 @@ public class PacketHandler
         Log.Information("Session {Id}: attack target {TargetId}", session.SessionId, packet.TargetEntityId);
 
         var zone = ZoneManager.Instance.GetZone(zoneId);
+        var currentTime = (float)DateTime.UtcNow.TimeOfDay.TotalSeconds;
+
         if (zone is DungeonZone dungeonZone)
-        {
-            var currentTime = (float)DateTime.UtcNow.TimeOfDay.TotalSeconds;
             dungeonZone.HandleAttack(entityId, packet.TargetEntityId, currentTime);
-        }
+        else if (zone is TimeLimitedFieldZone fieldZone)
+            fieldZone.HandleAttack(entityId, packet.TargetEntityId, currentTime);
         else
-        {
             Log.Warning("Session {Id}: attack in non-combat zone", session.SessionId);
-        }
     }
 
     // ── Field Handlers ───────────────────────────────────────────────────────

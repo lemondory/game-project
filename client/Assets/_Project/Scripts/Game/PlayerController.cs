@@ -26,8 +26,8 @@ public class PlayerController : MonoBehaviour
     void Update()
     {
         // 사망 시 입력 차단
-        if (DungeonManager.Instance != null && DungeonManager.Instance.IsDead)
-            return;
+        if (DungeonManager.Instance != null && DungeonManager.Instance.IsDead) return;
+        if (FieldManager.Instance   != null && FieldManager.Instance.IsDead)   return;
 
         // UI 입력 필드에 포커스 중이면 입력 무시
         if (EventSystem.current != null && EventSystem.current.currentSelectedGameObject != null)
@@ -80,18 +80,32 @@ public class PlayerController : MonoBehaviour
     private void HandleAttack()
     {
         if (!Mouse.current.leftButton.wasPressedThisFrame) return;
-        if (DungeonManager.Instance == null) return;
         if (Time.time - _lastAttackTime < attackCooldown) return;
 
         // UI 위의 클릭은 무시
         if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject())
             return;
 
-        long targetEntityId = DungeonManager.Instance.FindNearestMonster(transform.position, attackRange);
+        // 현재 씬에서 활성화된 매니저로 타겟 탐색
+        long targetEntityId = -1;
+        if (DungeonManager.Instance != null)
+        {
+            targetEntityId = DungeonManager.Instance.FindNearestMonster(transform.position, attackRange);
+            if (targetEntityId >= 0) DungeonManager.Instance.SetTarget(targetEntityId);
+        }
+        else if (FieldManager.Instance != null)
+        {
+            targetEntityId = FieldManager.Instance.FindNearestMonster(transform.position, attackRange);
+            if (targetEntityId >= 0) FieldManager.Instance.SetTarget(targetEntityId);
+        }
+
         if (targetEntityId < 0) return;
 
         // 공격 대상을 향해 회전
-        var targetObj = DungeonManager.Instance.GetEntityObject(targetEntityId);
+        GameObject targetObj = DungeonManager.Instance != null
+            ? DungeonManager.Instance.GetEntityObject(targetEntityId)
+            : FieldManager.Instance?.GetEntityObject(targetEntityId);
+
         if (targetObj != null)
         {
             var lookDir = targetObj.transform.position - transform.position;
@@ -99,9 +113,6 @@ public class PlayerController : MonoBehaviour
             if (lookDir != Vector3.zero)
                 transform.rotation = Quaternion.LookRotation(lookDir);
         }
-
-        // 타겟 표시
-        DungeonManager.Instance.SetTarget(targetEntityId);
 
         _lastAttackTime = Time.time;
         NetworkManager.Instance.Send(PacketId.C2S_Attack, new GameShared.Proto.C2S_Attack
