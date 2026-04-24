@@ -61,6 +61,9 @@ class Program
                 case "--file":
                     options.SingleFile = args[++i];
                     break;
+                case "--output-client":
+                    options.OutputClientDirectory = args[++i];
+                    break;
                 case "--validate-only":
                     options.ValidateOnly = true;
                     break;
@@ -109,6 +112,7 @@ Options:
   --output-bytes <dir>  Output directory for MessagePack files (default: data/bytes)
   --output-csv <dir>    Output directory for CSV files (default: data/csv)
   --enums <file>        Path to enums.xlsx file (default: <input>/enums.xlsx)
+  --output-client <dir> Copy generated .bytes to Unity StreamingAssets/Data (optional)
   --file <path>         Convert single file instead of directory
   --validate-only       Only validate files without generating output
   --help                Show this help message
@@ -127,6 +131,7 @@ class ConversionOptions
     public string OutputCodeDirectory { get; set; } = string.Empty;
     public string OutputBytesDirectory { get; set; } = string.Empty;
     public string OutputCsvDirectory { get; set; } = string.Empty;
+    public string OutputClientDirectory { get; set; } = string.Empty;
     public string EnumsFilePath { get; set; } = string.Empty;
     public string SingleFile { get; set; } = string.Empty;
     public bool ValidateOnly { get; set; }
@@ -279,10 +284,73 @@ class DataConverter
             Console.WriteLine($"  ✓ Generated GameDataManager.Generated.cs");
         }
 
+        // .bytes → Unity StreamingAssets 복사
+        if (!options.ValidateOnly && !string.IsNullOrEmpty(options.OutputClientDirectory))
+        {
+            Console.WriteLine("\nCopying to Unity client...");
+            try
+            {
+                Directory.CreateDirectory(options.OutputClientDirectory);
+
+                var bytesFiles = Directory.GetFiles(options.OutputBytesDirectory, "*.bytes");
+                int copied = 0;
+                int skipped = 0;
+
+                foreach (var src in bytesFiles)
+                {
+                    var fileName = Path.GetFileName(src);
+                    var dst = Path.Combine(options.OutputClientDirectory, fileName);
+
+                    // 파일이 없거나 내용이 다를 때만 복사
+                    if (!File.Exists(dst) || !FilesAreEqual(src, dst))
+                    {
+                        File.Copy(src, dst, overwrite: true);
+
+                        // .meta 파일이 없으면 기본 meta 생성 (Unity가 새 파일을 인식하기 위해 필요)
+                        var metaPath = dst + ".meta";
+                        if (!File.Exists(metaPath))
+                        {
+                            var guid = Guid.NewGuid().ToString("N");
+                            File.WriteAllText(metaPath,
+                                $"fileFormatVersion: 2\nguid: {guid}\nDefaultImporter:\n  externalObjects: {{}}\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n");
+                            Console.WriteLine($"  ✓ {fileName} (new + .meta generated)");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"  ✓ {fileName} (updated)");
+                        }
+                        copied++;
+                    }
+                    else
+                    {
+                        skipped++;
+                    }
+                }
+
+                if (skipped > 0)
+                    Console.WriteLine($"  - {skipped} file(s) unchanged, skipped");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  ✗ Client copy failed: {ex.Message}");
+            }
+        }
+
         Console.WriteLine($"\n=== Summary ===");
         Console.WriteLine($"Files processed: {filesToProcess.Count}");
         Console.WriteLine($"Total records: {totalRecords}");
         Console.WriteLine($"Enums: {enumSchemas.Count}");
+    }
+
+    private static bool FilesAreEqual(string path1, string path2)
+    {
+        var info1 = new FileInfo(path1);
+        var info2 = new FileInfo(path2);
+        if (info1.Length != info2.Length) return false;
+
+        var bytes1 = File.ReadAllBytes(path1);
+        var bytes2 = File.ReadAllBytes(path2);
+        return bytes1.SequenceEqual(bytes2);
     }
 
     private void ValidateSchema(TableSchema schema, HashSet<string> enumNames)

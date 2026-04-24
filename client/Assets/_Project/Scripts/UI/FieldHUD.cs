@@ -3,7 +3,9 @@ using UnityEngine.UI;
 using TMPro;
 
 /// <summary>
-/// Field 씬 HUD — 쿼터(일간/주간 남은 시간), HP, 전투 정보를 표시한다.
+/// 시간제 사냥터 HUD — DungeonHUD와 동일한 항목 구조.
+/// 타이머/킬카운트 대신 일간/주간 남은 입장 시간을 표시한다.
+/// 클리어 개념이 없으므로 결과 패널 없음.
 /// </summary>
 public class FieldHUD : MonoBehaviour
 {
@@ -40,6 +42,7 @@ public class FieldHUD : MonoBehaviour
     void Start()
     {
         if (deathPanel != null) deathPanel.SetActive(false);
+
         if (returnToTownButton != null)
             returnToTownButton.onClick.AddListener(OnReturnToTownClicked);
     }
@@ -54,7 +57,7 @@ public class FieldHUD : MonoBehaviour
         }
     }
 
-    // ── HP ──────────────────────────────────────────────────────────────────
+    // ── HP ──────────────────────────────────────────────────────
 
     public void SetHealth(int currentHp, int maxHp)
     {
@@ -64,7 +67,7 @@ public class FieldHUD : MonoBehaviour
             hpText.text = $"{currentHp} / {maxHp}";
     }
 
-    // ── 정보 ────────────────────────────────────────────────────────────────
+    // ── 정보 ─────────────────────────────────────────────────────
 
     public void SetLevel(int level)
     {
@@ -81,18 +84,16 @@ public class FieldHUD : MonoBehaviour
         if (goldText != null) goldText.text = $"Gold: {gold}";
     }
 
-    // ── 쿼터 ────────────────────────────────────────────────────────────────
+    // ── 쿼터 ─────────────────────────────────────────────────────
 
-    /// <summary>서버에서 수신한 일간/주간 남은 시간(초)으로 UI를 갱신한다.</summary>
+    /// <summary>서버에서 60초마다 수신되는 쿼터 업데이트 + 입장 시 초기값.</summary>
     public void UpdateQuota(int dailyRemainingSeconds, int weeklyRemainingSeconds)
     {
         if (dailyQuotaText != null)
         {
             int m = dailyRemainingSeconds / 60;
             int s = dailyRemainingSeconds % 60;
-            dailyQuotaText.text = $"오늘 {m:D2}:{s:D2}";
-
-            // 5분 이하 경고색
+            dailyQuotaText.text  = $"오늘 {m:D2}:{s:D2}";
             dailyQuotaText.color = dailyRemainingSeconds <= 300 ? Color.red : Color.white;
         }
 
@@ -100,12 +101,12 @@ public class FieldHUD : MonoBehaviour
         {
             int m = weeklyRemainingSeconds / 60;
             int s = weeklyRemainingSeconds % 60;
-            weeklyQuotaText.text = $"이번 주 {m:D2}:{s:D2}";
+            weeklyQuotaText.text  = $"이번 주 {m:D2}:{s:D2}";
             weeklyQuotaText.color = weeklyRemainingSeconds <= 600 ? Color.yellow : Color.white;
         }
     }
 
-    // ── 전투 로그 ────────────────────────────────────────────────────────────
+    // ── 전투 로그 ────────────────────────────────────────────────
 
     public void ShowCombatLog(string message)
     {
@@ -116,9 +117,11 @@ public class FieldHUD : MonoBehaviour
         }
     }
 
-    public void ShowDamage(int damage)         => ShowCombatLog($"-{damage} HP");
-    public void ShowReward(int exp, int gold)  => ShowCombatLog($"+{exp} EXP  +{gold} Gold");
-    public void ShowLevelUp(int level)         => ShowCombatLog($"LEVEL UP! Lv.{level}");
+    public void ShowDamage(int damage)            => ShowCombatLog($"-{damage} HP");
+    public void ShowReward(int exp, int gold)     => ShowCombatLog($"+{exp} EXP  +{gold} Gold");
+    public void ShowLevelUp(int level)            => ShowCombatLog($"LEVEL UP! Lv.{level}");
+
+    // ── 사망 ─────────────────────────────────────────────────────
 
     public void ShowPlayerDeath()
     {
@@ -127,7 +130,7 @@ public class FieldHUD : MonoBehaviour
         if (deathPanel != null) deathPanel.SetActive(true);
     }
 
-    // ── 버튼 ────────────────────────────────────────────────────────────────
+    // ── 버튼 ─────────────────────────────────────────────────────
 
     private void OnReturnToTownClicked()
     {
