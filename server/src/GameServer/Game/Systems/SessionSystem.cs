@@ -1,5 +1,6 @@
-using DefaultEcs;
-using DefaultEcs.System;
+using Arch.Core;
+using Arch.Core.Extensions;
+using Arch.System;
 using GameServer.Game.Components;
 using Serilog;
 
@@ -10,53 +11,47 @@ namespace GameServer.Game.Systems;
 /// S2C_Despawn is NOT sent here — AoiSystem handles it on the next tick
 /// when the removed entity disappears from players' visible sets.
 /// </summary>
-public class SessionSystem : AEntitySetSystem<float>
+public class SessionSystem : BaseSystem<World, float>
 {
-    private readonly List<Entity> _entitiesToRemove = new();
-    private readonly AoiGrid?     _aoiGrid;
+    private readonly QueryDescription _query = new QueryDescription()
+        .WithAll<SessionComponent>();
 
-    public SessionSystem(World world, AoiGrid? aoiGrid = null)
-        : base(world.GetEntities()
-            .With<SessionComponent>()
-            .AsSet())
+    private readonly List<Entity> _entitiesToRemove = new();
+    private readonly AoiGrid?    _aoiGrid;
+
+    public SessionSystem(World world, AoiGrid? aoiGrid = null) : base(world)
     {
         _aoiGrid = aoiGrid;
     }
 
-    protected override void Update(float deltaTime, in Entity entity)
+    public override void Update(in float state)
     {
-        if (!entity.IsAlive)
-            return;
+        _entitiesToRemove.Clear();
 
-        ref var session = ref entity.Get<SessionComponent>();
-        if (session.Session.IsConnected)
-            return;
-
-        if (entity.Has<PlayerComponent>())
+        World.Query(in _query, (Entity entity, ref SessionComponent session) =>
         {
-            ref var player = ref entity.Get<PlayerComponent>();
-            Log.Information("Player disconnected: {PlayerId} - {PlayerName}", player.PlayerId, player.Name);
-        }
+            if (session.Session.IsConnected) return;
 
-        if (entity.Has<EntityIdComponent>())
-            Log.Debug("Removing entity: {EntityId}", entity.Get<EntityIdComponent>().EntityId);
+            if (entity.Has<PlayerComponent>())
+            {
+                var player = entity.Get<PlayerComponent>();
+                Log.Information("Player disconnected: {PlayerId} - {PlayerName}", player.PlayerId, player.Name);
+            }
 
-        _entitiesToRemove.Add(entity);
-    }
+            if (entity.Has<EntityIdComponent>())
+                Log.Debug("Removing entity: {EntityId}", entity.Get<EntityIdComponent>().EntityId);
 
-    protected override void PostUpdate(float state)
-    {
+            _entitiesToRemove.Add(entity);
+        });
+
         foreach (var entity in _entitiesToRemove)
         {
-            if (!entity.IsAlive) continue;
+            if (!entity.IsAlive()) continue;
 
-            // Remove from AOI grid before disposing so AoiSystem can detect the absence
-            // and send S2C_Despawn to interested players on the next tick.
             if (_aoiGrid != null && entity.Has<EntityIdComponent>())
                 _aoiGrid.Remove(entity.Get<EntityIdComponent>().EntityId);
 
-            entity.Dispose();
+            World.Destroy(entity);
         }
-        _entitiesToRemove.Clear();
     }
 }

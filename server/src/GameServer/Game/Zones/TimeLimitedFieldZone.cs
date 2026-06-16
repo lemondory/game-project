@@ -1,5 +1,6 @@
-using DefaultEcs;
-using DefaultEcs.System;
+using Arch.Core;
+using Arch.Core.Extensions;
+using Arch.System;
 using GameServer.Database;
 using GameServer.Game.Components;
 using GameServer.Game.Systems;
@@ -26,42 +27,48 @@ public class TimeLimitedFieldZone : Zone
     private const float ViewRadius   = 50f;
     private const float ViewRadiusSq = ViewRadius * ViewRadius;
 
-    // 쿼터 DB 저장 주기 (초) — 1분마다 저장해 서버 크래시 시 손실 최소화
     private const float QuotaSaveInterval      = 60f;
-    // 클라이언트 쿼터 업데이트 브로드캐스트 주기 (초)
     private const float QuotaBroadcastInterval = 60f;
 
-    private static long _nextEntityId = 50000; // 필드 엔티티 ID 범위
+    private static long _nextEntityId = 50000;
 
     public int FieldId { get; }
 
     private readonly TimeLimitedFieldData _fieldData;
     private readonly Random _random = new();
 
-    // 리스폰 대기 큐 (monsterId, 스폰 위치, 남은 대기 시간)
-    private readonly List<(int monsterId, Vector3 position, float delay)> _respawnQueue = new();
+    private readonly List<WorldObject> _worldObjects = new();
+    private int _nextWorldObjectId = 1;
 
-    // 플레이어별 쿼터 인메모리 캐시
-    // key: playerId
-    private readonly Dictionary<long, PlayerQuotaState> _quotaCache = new();
+    private readonly List<(int monsterId, Vector3 position, float delay)> _respawnQueue   = new();
+    private readonly HashSet<long>                                          _deadPlayerIds  = new();
+    private readonly Dictionary<long, PlayerQuotaState>                    _quotaCache     = new();
 
-    // 마지막 DB 저장/브로드캐스트 시각
-    private float _quotaSaveCooldown    = QuotaSaveInterval;
+    private float _quotaSaveCooldown      = QuotaSaveInterval;
     private float _quotaBroadcastCooldown = QuotaBroadcastInterval;
 
-    // ── 플레이어 쿼터 상태 (인메모리) ───────────────────────────────────────
+    // 공통 쿼리
+    private readonly QueryDescription _allQuery        = new QueryDescription().WithAll<EntityIdComponent, PositionComponent, HealthComponent>();
+    private readonly QueryDescription _playerQuery     = new QueryDescription().WithAll<PlayerComponent, EntityIdComponent>();
+    private readonly QueryDescription _sessionQuery    = new QueryDescription().WithAll<SessionComponent>();
+    private readonly QueryDescription _playerSessQuery = new QueryDescription().WithAll<PlayerComponent, SessionComponent>();
+    private readonly QueryDescription _deathBcastQuery = new QueryDescription().WithAll<SessionComponent, InterestComponent, EntityIdComponent>();
+    private readonly QueryDescription _attackQuery     = new QueryDescription().WithAll<EntityIdComponent, AttackComponent, PositionComponent>();
+    private readonly QueryDescription _respawnQuery    = new QueryDescription()
+        .WithAll<PlayerComponent, EntityIdComponent, HealthComponent, PositionComponent, SessionComponent>();
+
+    // ── 플레이어 쿼터 상태 (인메모리) ────────────────────────────────────────
     private class PlayerQuotaState
     {
-        public long PlayerId          { get; init; }
-        public int  DailyUsedSeconds  { get; set; }
-        public int  WeeklyUsedSeconds { get; set; }
-        public DateTime LastDailyReset  { get; set; }
-        public DateTime LastWeeklyReset { get; set; }
+        public long     PlayerId          { get; init; }
+        public int      DailyUsedSeconds  { get; set; }
+        public int      WeeklyUsedSeconds { get; set; }
+        public DateTime LastDailyReset    { get; set; }
+        public DateTime LastWeeklyReset   { get; set; }
 
-        // 일간/주간 리셋을 체크하고 필요하면 초기화한다.
         public void ApplyResets()
         {
-            var today = DateTime.UtcNow.Date;
+            var today    = DateTime.UtcNow.Date;
             var thisWeek = GetWeekStart(DateTime.UtcNow);
 
             if (LastDailyReset.Date < today)
@@ -78,7 +85,6 @@ public class TimeLimitedFieldZone : Zone
 
         private static DateTime GetWeekStart(DateTime dt)
         {
-            // ISO 8601: 주 시작은 월요일
             int diff = (7 + (int)dt.DayOfWeek - (int)DayOfWeek.Monday) % 7;
             return dt.Date.AddDays(-diff);
         }
@@ -89,11 +95,29 @@ public class TimeLimitedFieldZone : Zone
         FieldId = fieldId;
         _fieldData = GameDataManager.TimeLimitedFieldData.GetById(fieldId)
             ?? throw new ArgumentException($"Unknown fieldId={fieldId}");
+        InitializeWorldObjects();
+    }
+
+    private void InitializeWorldObjects()
+    {
+        var layouts = GameDataManager.WorldObjectLayout.Where(l => l.FieldId == FieldId);
+        foreach (var layout in layouts)
+        {
+            var data = GameDataManager.WorldObjectData.GetById(layout.ObjectDataId);
+            if (data == null)
+            {
+                Log.Warning("WorldObjectLayout {Id}: ObjectDataId={DataId} not found", layout.LayoutId, layout.ObjectDataId);
+                continue;
+            }
+            var pos = new Vector3(layout.PosX, layout.PosY, layout.PosZ);
+            _worldObjects.Add(new WorldObject(_nextWorldObjectId++, data, pos));
+        }
+        Log.Information("FieldZone {FieldId}: {Count} world objects initialized", FieldId, _worldObjects.Count);
     }
 
     protected override ISystem<float> CreateSystems()
     {
-        return new SequentialSystem<float>(
+        return new Group<float>($"Field-{ZoneId}",
             new MonsterAISystem(World),
             new MovementSystem(World),
             new AoiSystem(World, AoiGrid, SubscriberMap),
@@ -108,10 +132,6 @@ public class TimeLimitedFieldZone : Zone
 
     // ── 플레이어 관리 ────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// 쿼터를 DB에서 로드하고 잔여 시간을 반환한다.
-    /// 쿼터 소진 시 (dailyRemaining=0 OR weeklyRemaining=0) 입장 거부용.
-    /// </summary>
     public async Task<(int dailyRemaining, int weeklyRemaining)> LoadQuotaAsync(long playerId)
     {
         var dbQuota = await DatabaseManager.Instance.Game.GetFieldQuotaAsync(playerId, FieldId);
@@ -143,16 +163,17 @@ public class TimeLimitedFieldZone : Zone
         int attack  = classData?.BaseAttack  ?? 10;
         int defense = classData?.BaseDefense ?? 8;
 
-        var entity = World.CreateEntity();
-        entity.Set(new EntityIdComponent(entityId));
-        entity.Set(new PlayerComponent(playerId, playerName, level: 1, exp: 0, gold: 0, classId: defaultClassId));
-        entity.Set(new SessionComponent(session));
-        entity.Set(new ZoneComponent(ZoneId, ZoneType));
-        entity.Set(new PositionComponent(0f, 0f, 0f));
-        entity.Set(new HealthComponent(hp));
-        entity.Set(new AttackComponent(attack, 3f, 1f));
-        entity.Set(new DefenseComponent(defense));
-        entity.Set(new InterestComponent());
+        var entity = World.Create(
+            new EntityIdComponent(entityId),
+            new PlayerComponent(playerId, playerName, level: 1, exp: 0, gold: 0, classId: defaultClassId),
+            new SessionComponent(session),
+            new ZoneComponent(ZoneId, ZoneType),
+            new PositionComponent(0f, 0f, 0f),
+            new HealthComponent(hp),
+            new AttackComponent(attack, 3f, 1f),
+            new DefenseComponent(defense),
+            new InterestComponent()
+        );
 
         AoiGrid.Add(entityId, 0f, 0f);
 
@@ -164,26 +185,23 @@ public class TimeLimitedFieldZone : Zone
 
     public async Task RemovePlayerAsync(long playerId)
     {
-        // 쿼터 즉시 DB 저장
+        _deadPlayerIds.Remove(playerId);
+
         await SavePlayerQuotaAsync(playerId);
         _quotaCache.Remove(playerId);
 
-        // ECS에서 제거
-        var playerEntities = World.GetEntities()
-            .With<PlayerComponent>()
-            .With<EntityIdComponent>()
-            .AsSet();
-
-        foreach (var entity in playerEntities.GetEntities())
+        Entity? toRemove = null;
+        World.Query(in _playerQuery, (Entity entity, ref PlayerComponent player, ref EntityIdComponent eid) =>
         {
-            if (!entity.IsAlive) continue;
-            if (entity.Get<PlayerComponent>().PlayerId != playerId) continue;
+            if (player.PlayerId == playerId) toRemove = entity;
+        });
 
-            ref var eid = ref entity.Get<EntityIdComponent>();
-            AoiGrid.Remove(eid.EntityId);
-            SubscriberMap.RemoveEntity(eid.EntityId);
-            entity.Dispose();
-            break;
+        if (toRemove.HasValue && toRemove.Value.IsAlive())
+        {
+            var eid = World.Get<EntityIdComponent>(toRemove.Value).EntityId;
+            AoiGrid.Remove(eid);
+            SubscriberMap.RemoveEntity(eid);
+            World.Destroy(toRemove.Value);
         }
 
         Log.Information("Player {PlayerId} left field ZoneId={ZoneId}", playerId, ZoneId);
@@ -193,53 +211,83 @@ public class TimeLimitedFieldZone : Zone
 
     public Entity SpawnMonster(int monsterId, Vector3 position)
     {
-        var entityId = Interlocked.Increment(ref _nextEntityId);
+        var entityId    = Interlocked.Increment(ref _nextEntityId);
         var monsterData = GameDataManager.MonsterData.GetById(monsterId);
         if (monsterData == null) return default;
 
-        var entity = World.CreateEntity();
-        entity.Set(new EntityIdComponent(entityId));
-        entity.Set(new MonsterComponent(monsterId, monsterData));
-        entity.Set(new ZoneComponent(ZoneId, ZoneType));
-        entity.Set(new PositionComponent(position));
-        entity.Set(new HealthComponent(monsterData.Hp));
-        entity.Set(new AttackComponent(monsterData.AttackPower, monsterData.AttackRange, monsterData.AttackCooldown));
-        entity.Set(new DefenseComponent(monsterData.Defense));
-        entity.Set(new AIComponent(monsterData.AggroRange, monsterData.AttackRange, monsterData.MoveSpeed));
-        entity.Set(new CombatStateComponent(false, 0));
+        var entity = World.Create(
+            new EntityIdComponent(entityId),
+            new MonsterComponent(monsterId, monsterData),
+            new ZoneComponent(ZoneId, ZoneType),
+            new PositionComponent(position),
+            new SpawnPositionComponent(position),
+            new HealthComponent(monsterData.Hp),
+            new AttackComponent(monsterData.AttackPower, monsterData.AttackRange, monsterData.AttackCooldown),
+            new DefenseComponent(monsterData.Defense),
+            new AIComponent(monsterData.AggroRange, monsterData.AttackRange, monsterData.MoveSpeed),
+            new CombatStateComponent(false, 0)
+        );
 
         AoiGrid.Add(entityId, position.X, position.Z);
         return entity;
+    }
+
+    // ── 부활 처리 ────────────────────────────────────────────────────────────
+
+    public void RequestRespawn(long playerId)
+        => EnqueueAction(() => HandleRespawn(playerId));
+
+    private void HandleRespawn(long playerId)
+    {
+        if (!_deadPlayerIds.Contains(playerId)) return;
+
+        World.Query(in _respawnQuery, (Entity entity, ref PlayerComponent player,
+            ref EntityIdComponent eid, ref HealthComponent health,
+            ref PositionComponent position, ref SessionComponent session) =>
+        {
+            if (player.PlayerId != playerId) return;
+
+            position.Position = new Vector3(0f, 0f, 0f);
+            health.Current    = health.Max;
+            _deadPlayerIds.Remove(playerId);
+
+            AoiGrid.Update(eid.EntityId, 0f, 0f);
+
+            session.Session.Send(PacketId.S2C_RespawnResult, new S2C_RespawnResult
+            {
+                Success   = true,
+                Position  = new Vec3 { X = 0f, Y = 0f, Z = 0f },
+                CurrentHp = health.Current,
+                MaxHp     = health.Max
+            });
+
+            Log.Information("Player {PlayerId} respawned at entrance in field ZoneId={ZoneId}", playerId, ZoneId);
+        });
     }
 
     // ── 플레이어 공격 처리 ───────────────────────────────────────────────────
 
     public void HandleAttack(long attackerEntityId, long targetEntityId, float currentTime)
     {
-        var entities = World.GetEntities().With<EntityIdComponent>().With<AttackComponent>().AsSet();
-
         Entity? attackerEntity = null;
-        foreach (var e in entities.GetEntities())
-        {
-            if (e.Get<EntityIdComponent>().EntityId == attackerEntityId) { attackerEntity = e; break; }
-        }
-        if (!attackerEntity.HasValue) return;
+        Entity? targetEntity   = null;
 
-        ref var attack = ref attackerEntity.Value.Get<AttackComponent>();
+        World.Query(in _attackQuery, (Entity entity, ref EntityIdComponent eid) =>
+        {
+            if (eid.EntityId == attackerEntityId) attackerEntity = entity;
+            else if (eid.EntityId == targetEntityId) targetEntity = entity;
+        });
+
+        if (!attackerEntity.HasValue || !targetEntity.HasValue) return;
+
+        ref var attack = ref attackerEntity.Value.TryGetRef<AttackComponent>(out _);
         if (!attack.CanAttack(currentTime)) return;
 
-        Entity? targetEntity = null;
-        foreach (var e in entities.GetEntities())
-        {
-            if (e.Get<EntityIdComponent>().EntityId == targetEntityId) { targetEntity = e; break; }
-        }
-        if (!targetEntity.HasValue) return;
-
-        ref var attackerPos = ref attackerEntity.Value.Get<PositionComponent>();
-        ref var targetPos   = ref targetEntity.Value.Get<PositionComponent>();
+        ref var attackerPos = ref attackerEntity.Value.TryGetRef<PositionComponent>(out _);
+        ref var targetPos   = ref targetEntity.Value.TryGetRef<PositionComponent>(out _);
         if (attackerPos.Position.Distance(targetPos.Position) > attack.Range) return;
 
-        ref var targetHealth  = ref targetEntity.Value.Get<HealthComponent>();
+        ref var targetHealth = ref targetEntity.Value.TryGetRef<HealthComponent>(out _);
         int targetDefense = targetEntity.Value.Has<DefenseComponent>()
             ? targetEntity.Value.Get<DefenseComponent>().Defense : 0;
         int damage = Math.Max(1, attack.Power - targetDefense);
@@ -258,25 +306,33 @@ public class TimeLimitedFieldZone : Zone
 
     private void HandleDeath(Entity deadEntity, Entity killerEntity)
     {
-        ref var deadEntityId   = ref deadEntity.Get<EntityIdComponent>();
-        ref var killerEntityId = ref killerEntity.Get<EntityIdComponent>();
+        var deadEntityId   = deadEntity.Get<EntityIdComponent>().EntityId;
+        var killerEntityId = killerEntity.Get<EntityIdComponent>().EntityId;
 
         if (deadEntity.Has<MonsterComponent>() && killerEntity.Has<PlayerComponent>())
             GiveReward(deadEntity, killerEntity);
 
-        BroadcastDeath(deadEntityId.EntityId, killerEntityId.EntityId);
+        BroadcastDeath(deadEntityId, killerEntityId);
+
+        if (deadEntity.Has<PlayerComponent>())
+        {
+            var playerId = deadEntity.Get<PlayerComponent>().PlayerId;
+            _deadPlayerIds.Add(playerId);
+            return;
+        }
 
         if (deadEntity.Has<MonsterComponent>())
         {
-            ref var monsterComp = ref deadEntity.Get<MonsterComponent>();
-            var deadPos = deadEntity.Get<PositionComponent>().Position;
+            var monsterId  = deadEntity.Get<MonsterComponent>().MonsterId;
+            var spawnPos   = deadEntity.Has<SpawnPositionComponent>()
+                ? deadEntity.Get<SpawnPositionComponent>().Position
+                : deadEntity.Get<PositionComponent>().Position;
 
-            AoiGrid.Remove(deadEntityId.EntityId);
-            SubscriberMap.RemoveEntity(deadEntityId.EntityId);
-            deadEntity.Dispose();
+            AoiGrid.Remove(deadEntityId);
+            SubscriberMap.RemoveEntity(deadEntityId);
+            World.Destroy(deadEntity);
 
-            // 리스폰 큐 등록
-            _respawnQueue.Add((monsterComp.MonsterId, deadPos, _fieldData.RespawnDelaySeconds));
+            _respawnQueue.Add((monsterId, spawnPos, _fieldData.RespawnDelaySeconds));
         }
     }
 
@@ -284,9 +340,9 @@ public class TimeLimitedFieldZone : Zone
     {
         if (!killerEntity.Has<SessionComponent>()) return;
 
-        ref var monster = ref deadEntity.Get<MonsterComponent>();
-        ref var player  = ref killerEntity.Get<PlayerComponent>();
-        ref var session = ref killerEntity.Get<SessionComponent>();
+        var monster = deadEntity.Get<MonsterComponent>();
+        ref var player  = ref killerEntity.TryGetRef<PlayerComponent>(out _);
+        ref var session = ref killerEntity.TryGetRef<SessionComponent>(out _);
 
         player.Exp  += monster.Data.ExpReward;
         player.Gold += monster.Data.GoldReward;
@@ -303,9 +359,9 @@ public class TimeLimitedFieldZone : Zone
                 && killerEntity.Has<AttackComponent>()
                 && killerEntity.Has<DefenseComponent>())
             {
-                ref var health = ref killerEntity.Get<HealthComponent>();
-                ref var atk    = ref killerEntity.Get<AttackComponent>();
-                ref var def    = ref killerEntity.Get<DefenseComponent>();
+                ref var health = ref killerEntity.TryGetRef<HealthComponent>(out _);
+                ref var atk    = ref killerEntity.TryGetRef<AttackComponent>(out _);
+                ref var def    = ref killerEntity.TryGetRef<DefenseComponent>(out _);
 
                 health.Max     += classData.HpPerLevel;
                 health.Current += classData.HpPerLevel;
@@ -336,7 +392,77 @@ public class TimeLimitedFieldZone : Zone
     protected override void OnUpdate(float deltaTime)
     {
         ProcessRespawnQueue(deltaTime);
+        ProcessWorldObjects(deltaTime);
         ProcessQuotaTracking(deltaTime);
+    }
+
+    private void ProcessWorldObjects(float deltaTime)
+    {
+        foreach (var obj in _worldObjects)
+        {
+            bool respawned = obj.Tick(deltaTime);
+            if (respawned) BroadcastObjectState(obj);
+        }
+    }
+
+    // ── WorldObject 채집 ──────────────────────────────────────────────────────
+
+    public void RequestInteract(ISession session, long playerId, int targetObjectId)
+        => EnqueueAction(() => HandleInteract(session, playerId, targetObjectId));
+
+    private void HandleInteract(ISession session, long playerId, int targetObjectId)
+    {
+        var obj = _worldObjects.Find(o => o.ObjectId == targetObjectId);
+        if (obj == null)
+        {
+            session.Send(PacketId.S2C_InteractResult, new S2C_InteractResult
+                { ObjectId = targetObjectId, Success = false, Message = "Object not found" });
+            return;
+        }
+
+        if (!obj.TryHarvest())
+        {
+            session.Send(PacketId.S2C_InteractResult, new S2C_InteractResult
+                { ObjectId = targetObjectId, Success = false, Message = "Object not available" });
+            return;
+        }
+
+        session.Send(PacketId.S2C_InteractResult, new S2C_InteractResult
+        {
+            ObjectId = targetObjectId,
+            Success  = true,
+            Reward   = new ObjectReward { ItemId = obj.ItemId, ItemCount = obj.ItemCount, ExpReward = obj.ExpReward }
+        });
+
+        BroadcastObjectState(obj);
+        Log.Information("Player {PlayerId} harvested object {ObjectId} (FieldId={FieldId})", playerId, targetObjectId, FieldId);
+    }
+
+    public List<S2C_ObjectInfo> GetAllObjectInfos()
+    {
+        var result = new List<S2C_ObjectInfo>(_worldObjects.Count);
+        foreach (var obj in _worldObjects)
+        {
+            result.Add(new S2C_ObjectInfo
+            {
+                ObjectId                = obj.ObjectId,
+                DataId                  = obj.DataId,
+                Position                = new Vec3 { X = obj.Position.X, Y = obj.Position.Y, Z = obj.Position.Z },
+                State                   = (int)obj.State,
+                RespawnRemainingSeconds = obj.RespawnRemainingSeconds
+            });
+        }
+        return result;
+    }
+
+    private void BroadcastObjectState(WorldObject obj)
+    {
+        BroadcastToAllPlayers(PacketId.S2C_ObjectState, new S2C_ObjectState
+        {
+            ObjectId                = obj.ObjectId,
+            State                   = (int)obj.State,
+            RespawnRemainingSeconds = obj.RespawnRemainingSeconds
+        });
     }
 
     private void ProcessRespawnQueue(float deltaTime)
@@ -345,15 +471,8 @@ public class TimeLimitedFieldZone : Zone
         {
             var (monsterId, pos, delay) = _respawnQueue[i];
             float newDelay = delay - deltaTime;
-            if (newDelay <= 0f)
-            {
-                _respawnQueue.RemoveAt(i);
-                SpawnMonster(monsterId, pos);
-            }
-            else
-            {
-                _respawnQueue[i] = (monsterId, pos, newDelay);
-            }
+            if (newDelay <= 0f) { _respawnQueue.RemoveAt(i); SpawnMonster(monsterId, pos); }
+            else                { _respawnQueue[i] = (monsterId, pos, newDelay); }
         }
     }
 
@@ -361,21 +480,11 @@ public class TimeLimitedFieldZone : Zone
     {
         if (_quotaCache.Count == 0) return;
 
-        // 접속 중인 모든 플레이어 쿼터를 deltaTime만큼 소진
         var playersToEvict = new List<(long playerId, ISession session)>();
 
-        var playerEntities = World.GetEntities()
-            .With<PlayerComponent>()
-            .With<SessionComponent>()
-            .AsSet();
-
-        foreach (var entity in playerEntities.GetEntities())
+        World.Query(in _playerSessQuery, (ref PlayerComponent player, ref SessionComponent session) =>
         {
-            if (!entity.IsAlive) continue;
-            ref var player  = ref entity.Get<PlayerComponent>();
-            ref var session = ref entity.Get<SessionComponent>();
-
-            if (!_quotaCache.TryGetValue(player.PlayerId, out var state)) continue;
+            if (!_quotaCache.TryGetValue(player.PlayerId, out var state)) return;
 
             state.ApplyResets();
             state.DailyUsedSeconds  += (int)deltaTime;
@@ -384,24 +493,18 @@ public class TimeLimitedFieldZone : Zone
             int dailyLimit  = _fieldData.DailyLimitMinutes  * 60;
             int weeklyLimit = _fieldData.WeeklyLimitMinutes * 60;
 
-            // 쿼터 소진 시 퇴장 대상으로 수집
             if (state.DailyUsedSeconds >= dailyLimit || state.WeeklyUsedSeconds >= weeklyLimit)
                 playersToEvict.Add((player.PlayerId, session.Session));
-        }
+        });
 
-        // 쿼터 소진 플레이어 강제 퇴장
         foreach (var (playerId, sess) in playersToEvict)
         {
             sess.Send(PacketId.S2C_FieldQuotaUpdate, new S2C_FieldQuotaUpdate
-            {
-                DailyRemainingSeconds  = 0,
-                WeeklyRemainingSeconds = 0
-            });
+                { DailyRemainingSeconds = 0, WeeklyRemainingSeconds = 0 });
             sess.Send(PacketId.S2C_LeaveField, new S2C_LeaveField { Success = true });
             _ = RemovePlayerAsync(playerId);
         }
 
-        // 1분마다 DB 저장 + 클라이언트 쿼터 업데이트 브로드캐스트
         _quotaSaveCooldown      -= deltaTime;
         _quotaBroadcastCooldown -= deltaTime;
 
@@ -421,34 +524,23 @@ public class TimeLimitedFieldZone : Zone
 
     private void BroadcastQuotaUpdate()
     {
-        var playerEntities = World.GetEntities()
-            .With<PlayerComponent>()
-            .With<SessionComponent>()
-            .AsSet();
-
         int dailyLimit  = _fieldData.DailyLimitMinutes  * 60;
         int weeklyLimit = _fieldData.WeeklyLimitMinutes * 60;
 
-        foreach (var entity in playerEntities.GetEntities())
+        World.Query(in _playerSessQuery, (ref PlayerComponent player, ref SessionComponent session) =>
         {
-            if (!entity.IsAlive) continue;
-            ref var player  = ref entity.Get<PlayerComponent>();
-            ref var session = ref entity.Get<SessionComponent>();
-
-            if (!_quotaCache.TryGetValue(player.PlayerId, out var state)) continue;
-
+            if (!_quotaCache.TryGetValue(player.PlayerId, out var state)) return;
             session.Session.Send(PacketId.S2C_FieldQuotaUpdate, new S2C_FieldQuotaUpdate
             {
                 DailyRemainingSeconds  = Math.Max(0, dailyLimit  - state.DailyUsedSeconds),
                 WeeklyRemainingSeconds = Math.Max(0, weeklyLimit - state.WeeklyUsedSeconds)
             });
-        }
+        });
     }
 
     private async Task SavePlayerQuotaAsync(long playerId)
     {
         if (!_quotaCache.TryGetValue(playerId, out var state)) return;
-
         await DatabaseManager.Instance.Game.SaveFieldQuotaAsync(
             playerId, FieldId,
             state.DailyUsedSeconds, state.WeeklyUsedSeconds,
@@ -460,98 +552,85 @@ public class TimeLimitedFieldZone : Zone
     public List<EntityInfo> GetNearbyEntityInfos(ISession excludeSession)
     {
         float playerX = 0f, playerZ = 0f;
-        var allEntities = World.GetEntities()
-            .With<EntityIdComponent>().With<PositionComponent>().With<HealthComponent>().AsSet();
 
-        foreach (var candidate in allEntities.GetEntities())
+        World.Query(in _allQuery, (Entity entity, ref EntityIdComponent eid) =>
         {
-            if (!candidate.Has<SessionComponent>()) continue;
-            if (candidate.Get<SessionComponent>().Session != excludeSession) continue;
-            ref var pos = ref candidate.Get<PositionComponent>();
-            playerX = pos.Position.X; playerZ = pos.Position.Z;
-            break;
-        }
+            if (!entity.Has<SessionComponent>()) return;
+            if (entity.Get<SessionComponent>().Session != excludeSession) return;
+            ref var p = ref entity.TryGetRef<PositionComponent>(out _);
+            playerX = p.Position.X; playerZ = p.Position.Z;
+        });
 
         var result = new List<EntityInfo>();
-        foreach (var entity in allEntities.GetEntities())
+
+        World.Query(in _allQuery, (Entity entity, ref EntityIdComponent entityId,
+            ref PositionComponent pos, ref HealthComponent health) =>
         {
-            if (entity.Has<SessionComponent>())
-            {
-                ref var session = ref entity.Get<SessionComponent>();
-                if (session.Session == excludeSession) continue;
-            }
+            if (entity.Has<SessionComponent>() && entity.Get<SessionComponent>().Session == excludeSession) return;
 
-            ref var p = ref entity.Get<PositionComponent>();
-            float dx = p.Position.X - playerX, dz = p.Position.Z - playerZ;
-            if (dx * dx + dz * dz > ViewRadiusSq) continue;
-
-            ref var entityId = ref entity.Get<EntityIdComponent>();
-            ref var health   = ref entity.Get<HealthComponent>();
+            float dx = pos.Position.X - playerX, dz = pos.Position.Z - playerZ;
+            if (dx * dx + dz * dz > ViewRadiusSq) return;
 
             string entityName;
             GameShared.Proto.EntityType entityType;
 
             if (entity.Has<PlayerComponent>())
             {
-                ref var pl = ref entity.Get<PlayerComponent>();
-                entityName = pl.Name; entityType = GameShared.Proto.EntityType.Player;
+                entityName = entity.Get<PlayerComponent>().Name;
+                entityType = GameShared.Proto.EntityType.Player;
             }
             else if (entity.Has<MonsterComponent>())
             {
-                ref var m = ref entity.Get<MonsterComponent>();
-                entityName = m.Data.Name; entityType = GameShared.Proto.EntityType.Monster;
+                entityName = entity.Get<MonsterComponent>().Data.Name;
+                entityType = GameShared.Proto.EntityType.Monster;
             }
-            else continue;
+            else return;
 
             result.Add(new EntityInfo
             {
                 EntityId   = entityId.EntityId,
                 EntityType = entityType,
                 Name       = entityName,
-                Position   = new Vec3 { X = p.Position.X, Y = p.Position.Y, Z = p.Position.Z },
+                Position   = new Vec3 { X = pos.Position.X, Y = pos.Position.Y, Z = pos.Position.Z },
                 CurrentHp  = health.Current,
                 MaxHp      = health.Max
             });
-        }
+        });
+
         return result;
     }
 
     // ── 브로드캐스트 헬퍼 ────────────────────────────────────────────────────
 
     private void BroadcastAttack(long attackerEntityId, long targetEntityId)
-        => BroadcastToAllPlayers(PacketId.S2C_Attack, new S2C_Attack
-            { AttackerEntityId = attackerEntityId, TargetEntityId = targetEntityId });
+        => BroadcastToAllPlayers(PacketId.S2C_Attack,
+            new S2C_Attack { AttackerEntityId = attackerEntityId, TargetEntityId = targetEntityId });
 
     private void BroadcastDamage(long targetEntityId, int damage, int currentHp, int maxHp)
-        => BroadcastToAllPlayers(PacketId.S2C_Damage, new S2C_Damage
-            { TargetEntityId = targetEntityId, Damage = damage, CurrentHp = currentHp, MaxHp = maxHp });
+        => BroadcastToAllPlayers(PacketId.S2C_Damage,
+            new S2C_Damage { TargetEntityId = targetEntityId, Damage = damage, CurrentHp = currentHp, MaxHp = maxHp });
 
     private void BroadcastDeath(long deadEntityId, long killerEntityId)
     {
         var packet = new S2C_Death { EntityId = deadEntityId, KillerEntityId = killerEntityId };
-        var entities = World.GetEntities()
-            .With<SessionComponent>().With<InterestComponent>().With<EntityIdComponent>().AsSet();
-
-        foreach (var entity in entities.GetEntities())
+        World.Query(in _deathBcastQuery, (Entity entity, ref SessionComponent session,
+            ref InterestComponent interest, ref EntityIdComponent entityId) =>
         {
-            ref var entityId = ref entity.Get<EntityIdComponent>();
-            var interest = entity.Get<InterestComponent>();
-            if (entityId.EntityId != deadEntityId && !interest.VisibleEntityIds.Contains(deadEntityId)) continue;
-            ref var session = ref entity.Get<SessionComponent>();
+            bool isSelf    = entityId.EntityId == deadEntityId;
+            bool isVisible = interest.VisibleEntityIds.Contains(deadEntityId);
+            if (!isSelf && !isVisible) return;
             if (session.Session.IsConnected)
                 session.Session.Send(PacketId.S2C_Death, packet);
-        }
+        });
     }
 
     private void BroadcastToAllPlayers(PacketId packetId, IMessage packet)
     {
-        var entities = World.GetEntities().With<SessionComponent>().AsSet();
-        foreach (var entity in entities.GetEntities())
+        World.Query(in _sessionQuery, (ref SessionComponent session) =>
         {
-            ref var session = ref entity.Get<SessionComponent>();
             if (session.Session.IsConnected)
                 session.Session.Send(packetId, packet);
-        }
+        });
     }
 
     // ── 헬퍼 ─────────────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
-using DefaultEcs;
+using Arch.Core;
+using Arch.Core.Extensions;
 using GameServer.Game.Components;
 using GameServer.Network;
 using GameShared.Enums;
@@ -14,39 +15,33 @@ namespace GameServer.Game.Zones;
 /// </summary>
 public class TownZone : Zone
 {
-    private const int   TownZoneId  = 1;
+    private const int   TownZoneId   = 1;
     private const float ViewRadius   = 50f;
     private const float ViewRadiusSq = ViewRadius * ViewRadius;
 
     private static long _nextEntityId = 1000;
 
-    // 자주 쓰이는 EntitySet을 생성자에서 한 번만 만들어 캐싱한다.
-    private readonly EntitySet _entitiesWithId;       // EntityId 보유 엔티티 전체
-    private readonly EntitySet _entitiesWithPlayer;   // EntityId + PlayerComponent 보유
+    private readonly QueryDescription _allQuery    = new QueryDescription().WithAll<EntityIdComponent>();
+    private readonly QueryDescription _playerQuery = new QueryDescription().WithAll<EntityIdComponent, PlayerComponent>();
 
-    public TownZone() : base(TownZoneId, ZoneType.Town)
-    {
-        _entitiesWithId     = World.GetEntities().With<EntityIdComponent>().AsSet();
-        _entitiesWithPlayer = World.GetEntities().With<EntityIdComponent>().With<PlayerComponent>().AsSet();
-    }
+    public TownZone() : base(TownZoneId, ZoneType.Town) { }
 
     // ── 플레이어 관리 ──────────────────────────────────────────────────────────
 
-    /// <summary>플레이어를 마을에 추가한다. BroadcastSpawn 없음 — AoiSystem이 다음 틱에 처리한다.</summary>
     public Entity AddPlayer(ISession session, long playerId, string playerName)
     {
         var entityId = Interlocked.Increment(ref _nextEntityId);
 
-        var entity = World.CreateEntity();
-        entity.Set(new EntityIdComponent(entityId));
-        entity.Set(new PlayerComponent(playerId, playerName));
-        entity.Set(new SessionComponent(session));
-        entity.Set(new ZoneComponent(ZoneId, ZoneType));
-        entity.Set(new PositionComponent(0f, 0f, 0f));
-        entity.Set(new HealthComponent(100));
-        entity.Set(new InterestComponent());  // AOI 관심 영역 추적
+        var entity = World.Create(
+            new EntityIdComponent(entityId),
+            new PlayerComponent(playerId, playerName),
+            new SessionComponent(session),
+            new ZoneComponent(ZoneId, ZoneType),
+            new PositionComponent(0f, 0f, 0f),
+            new HealthComponent(100),
+            new InterestComponent()
+        );
 
-        // 공간 해시 그리드에 등록
         AoiGrid.Add(entityId, 0f, 0f);
 
         Log.Information("Player entered town: {PlayerId} — {PlayerName} (EntityId: {EntityId})",
@@ -55,99 +50,74 @@ public class TownZone : Zone
         return entity;
     }
 
-    /// <summary>특정 세션의 현재 위치를 반환한다. 없으면 null.</summary>
-    /// <summary>EntityId로 플레이어 엔티티를 존에서 제거한다.</summary>
     public void RemoveEntityById(long entityId)
     {
         EnqueueAction(() =>
         {
-            foreach (var entity in _entitiesWithId.GetEntities())
+            World.Query(in _allQuery, (Entity entity, ref EntityIdComponent eid) =>
             {
-                if (!entity.IsAlive) continue;
-                ref var eid = ref entity.Get<EntityIdComponent>();
-                if (eid.EntityId != entityId) continue;
+                if (eid.EntityId != entityId) return;
                 AoiGrid.Remove(entityId);
-                entity.Dispose();
-                break;
-            }
+                World.Destroy(entity);
+            });
         });
     }
 
     public Vector3? GetPlayerPosition(ISession session)
     {
-        foreach (var entity in _entitiesWithPlayer.GetEntities())
+        Vector3? result = null;
+        World.Query(in _playerQuery, (Entity entity, ref SessionComponent sess, ref PositionComponent pos) =>
         {
-            if (!entity.Has<SessionComponent>() || !entity.Has<PositionComponent>()) continue;
-            if (entity.Get<SessionComponent>().Session != session) continue;
-            var p = entity.Get<PositionComponent>().Position;
-            return p;
-        }
-        return null;
+            if (sess.Session == session)
+                result = pos.Position;
+        });
+        return result;
     }
 
     /// <summary>
     /// 입장 시점의 ViewRadius 이내 엔티티 목록을 반환한다.
-    /// 새 플레이어는 제외하며, 반환된 목록으로 InterestComponent를 초기화한다.
     /// </summary>
     public List<EntityInfo> GetNearbyEntityInfos(ISession excludeSession)
     {
-        // 새 플레이어 위치 파악 (항상 origin이지만 동적으로 처리)
         float playerX = 0f, playerZ = 0f;
-        foreach (var candidate in _entitiesWithId.GetEntities())
+        World.Query(in _allQuery, (Entity entity, ref EntityIdComponent eid) =>
         {
-            if (!candidate.Has<SessionComponent>() || !candidate.Has<PositionComponent>()) continue;
-            if (candidate.Get<SessionComponent>().Session != excludeSession) continue;
-            ref var playerPos = ref candidate.Get<PositionComponent>();
-            playerX = playerPos.Position.X;
-            playerZ = playerPos.Position.Z;
-            break;
-        }
+            if (!entity.Has<SessionComponent>() || !entity.Has<PositionComponent>()) return;
+            if (entity.Get<SessionComponent>().Session != excludeSession) return;
+            ref var p = ref entity.TryGetRef<PositionComponent>(out _);
+            playerX = p.Position.X;
+            playerZ = p.Position.Z;
+        });
 
         var result = new List<EntityInfo>();
 
-        foreach (var entity in _entitiesWithId.GetEntities())
+        World.Query(in _allQuery, (Entity entity, ref EntityIdComponent entityId) =>
         {
-            if (!entity.Has<PositionComponent>() || !entity.Has<HealthComponent>())
-                continue;
+            if (!entity.Has<PositionComponent>() || !entity.Has<HealthComponent>()) return;
+            if (entity.Has<SessionComponent>() && entity.Get<SessionComponent>().Session == excludeSession) return;
 
-            // 새로 입장하는 플레이어 본인은 제외
-            if (entity.Has<SessionComponent>())
-            {
-                ref var session = ref entity.Get<SessionComponent>();
-                if (session.Session == excludeSession) continue;
-            }
+            ref var pos    = ref entity.TryGetRef<PositionComponent>(out _);
+            float distX = pos.Position.X - playerX;
+            float distZ = pos.Position.Z - playerZ;
+            if (distX * distX + distZ * distZ > ViewRadiusSq) return;
 
-            // ViewRadius 거리 필터
-            ref var position = ref entity.Get<PositionComponent>();
-            float distX = position.Position.X - playerX;
-            float distZ = position.Position.Z - playerZ;
-            if (distX * distX + distZ * distZ > ViewRadiusSq) continue;
-
-            ref var entityId = ref entity.Get<EntityIdComponent>();
-            ref var health   = ref entity.Get<HealthComponent>();
-            bool isPlayer    = entity.Has<PlayerComponent>();
-            string name      = isPlayer ? entity.Get<PlayerComponent>().Name : string.Empty;
+            ref var health  = ref entity.TryGetRef<HealthComponent>(out _);
+            bool isPlayer   = entity.Has<PlayerComponent>();
+            string name     = isPlayer ? entity.Get<PlayerComponent>().Name : string.Empty;
 
             result.Add(new EntityInfo
             {
                 EntityId   = entityId.EntityId,
                 EntityType = isPlayer ? GameShared.Proto.EntityType.Player : GameShared.Proto.EntityType.Monster,
                 Name       = name,
-                Position   = new Vec3 { X = position.Position.X, Y = position.Position.Y, Z = position.Position.Z },
+                Position   = new Vec3 { X = pos.Position.X, Y = pos.Position.Y, Z = pos.Position.Z },
                 CurrentHp  = health.Current,
                 MaxHp      = health.Max
             });
-        }
+        });
 
         return result;
     }
 
     protected override void OnUpdate(float deltaTime) { }
-
-    public override void Dispose()
-    {
-        _entitiesWithId.Dispose();
-        _entitiesWithPlayer.Dispose();
-        base.Dispose();
-    }
 }

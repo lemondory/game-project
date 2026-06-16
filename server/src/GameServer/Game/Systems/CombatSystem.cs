@@ -1,5 +1,6 @@
-using DefaultEcs;
-using DefaultEcs.System;
+using Arch.Core;
+using Arch.Core.Extensions;
+using Arch.System;
 using GameServer.Game.Components;
 using Serilog;
 
@@ -9,95 +10,83 @@ namespace GameServer.Game.Systems;
 /// Monster auto-attack: processes entities in combat and applies damage each cooldown tick.
 /// Damage, death, and rewards are reported via callbacks so the zone can broadcast them.
 /// </summary>
-public class CombatSystem : AEntitySetSystem<float>
+public class CombatSystem : BaseSystem<World, float>
 {
-    private readonly EntitySet _targetableEntities;
-    private readonly Action<long, long>? _onAttack;           // attackerEntityId, targetEntityId
-    private readonly Action<long, int, int, int>? _onDamage;  // targetEntityId, damage, currentHp, maxHp
-    private readonly Action<Entity, Entity>? _onDeath;        // deadEntity, killerEntity
+    private readonly QueryDescription _attackerQuery = new QueryDescription()
+        .WithAll<AttackComponent, CombatStateComponent, EntityIdComponent>();
+    private readonly QueryDescription _targetQuery   = new QueryDescription()
+        .WithAll<EntityIdComponent, HealthComponent>();
+
+    private readonly Action<long, long>?          _onAttack;
+    private readonly Action<long, int, int, int>? _onDamage;
+    private readonly Action<Entity, Entity>?       _onDeath;
+
+    // 프레임당 재사용 — 매 프레임 할당 없음
+    private readonly Dictionary<long, Entity>                                               _entityById    = new();
+    private readonly List<(long attackerId, long targetId, int damage, Entity a, Entity t)> _pendingEvents = new();
 
     public CombatSystem(World world,
-        Action<long, long>? onAttack = null,
+        Action<long, long>?          onAttack = null,
         Action<long, int, int, int>? onDamage = null,
-        Action<Entity, Entity>? onDeath = null)
-        : base(world.GetEntities()
-            .With<AttackComponent>()
-            .With<CombatStateComponent>()
-            .AsSet())
+        Action<Entity, Entity>?      onDeath  = null)
+        : base(world)
     {
-        _targetableEntities = world.GetEntities()
-            .With<EntityIdComponent>()
-            .With<HealthComponent>()
-            .AsSet();
         _onAttack = onAttack;
         _onDamage = onDamage;
-        _onDeath = onDeath;
+        _onDeath  = onDeath;
     }
 
-    protected override void Update(float deltaTime, in Entity entity)
+    public override void Update(in float state)
     {
-        ref var combat = ref entity.Get<CombatStateComponent>();
-        ref var attack = ref entity.Get<AttackComponent>();
-
-        if (!combat.InCombat || combat.TargetEntityId <= 0)
-            return;
+        // Step 1: 타겟 조회 딕셔너리 구성 (쿼리 내 중첩 쿼리 방지)
+        _entityById.Clear();
+        World.Query(in _targetQuery, (Entity e, ref EntityIdComponent eid) =>
+        {
+            _entityById[eid.EntityId] = e;
+        });
 
         float currentTime = (float)DateTime.UtcNow.TimeOfDay.TotalSeconds;
-        if (!attack.CanAttack(currentTime))
-            return;
+        _pendingEvents.Clear();
 
-        // Find target by entity ID
-        Entity? targetEntity = null;
-        foreach (var t in _targetableEntities.GetEntities())
+        // Step 2: 전투 중인 엔티티 처리 — 데미지는 여기서 바로 적용 (값 변경이므로 안전)
+        World.Query(in _attackerQuery, (Entity attacker, ref AttackComponent attack, ref CombatStateComponent combat, ref EntityIdComponent attackerId) =>
         {
-            if (t.Get<EntityIdComponent>().EntityId == combat.TargetEntityId)
+            if (!combat.InCombat || combat.TargetEntityId <= 0) return;
+            if (!attack.CanAttack(currentTime)) return;
+            if (!_entityById.TryGetValue(combat.TargetEntityId, out var target)) { combat.InCombat = false; combat.TargetEntityId = 0; return; }
+
+            ref var targetHealth = ref target.TryGetRef<HealthComponent>(out bool exists);
+            if (!exists || targetHealth.IsDead) { combat.InCombat = false; combat.TargetEntityId = 0; return; }
+
+            int targetDefense = target.Has<DefenseComponent>() ? target.Get<DefenseComponent>().Defense : 0;
+            int damage = Math.Max(1, attack.Power - targetDefense);
+
+            targetHealth.Current  = Math.Max(0, targetHealth.Current - damage);
+            attack.LastAttackTime = currentTime;
+
+            Log.Debug("Auto-attack: {Attacker} → {Target}, Dmg={Damage}, HP={Current}/{Max}",
+                attackerId.EntityId, combat.TargetEntityId, damage, targetHealth.Current, targetHealth.Max);
+
+            _pendingEvents.Add((attackerId.EntityId, combat.TargetEntityId, damage, attacker, target));
+
+            if (targetHealth.IsDead)
             {
-                targetEntity = t;
-                break;
+                combat.InCombat       = false;
+                combat.TargetEntityId = 0;
             }
-        }
+        });
 
-        if (!targetEntity.HasValue)
+        // Step 3: 콜백은 쿼리 종료 후 호출 (구조적 변경 가능한 콜백 안전 처리)
+        foreach (var (attackerId, targetId, damage, attacker, target) in _pendingEvents)
         {
-            combat.InCombat = false;
-            combat.TargetEntityId = 0;
-            return;
+            _onAttack?.Invoke(attackerId, targetId);
+
+            if (!target.IsAlive()) continue;
+            var health = target.Get<HealthComponent>();
+            _onDamage?.Invoke(targetId, damage, health.Current, health.Max);
+
+            if (health.IsDead)
+                _onDeath?.Invoke(target, attacker);
         }
-
-        ref var targetHealth = ref targetEntity.Value.Get<HealthComponent>();
-        if (targetHealth.IsDead)
-        {
-            combat.InCombat = false;
-            combat.TargetEntityId = 0;
-            return;
-        }
-
-        // Apply damage — 방어력 공식: Damage = max(1, AttackPower - Defense)
-        int targetDefense = targetEntity.Value.Has<DefenseComponent>()
-            ? targetEntity.Value.Get<DefenseComponent>().Defense : 0;
-        int damage = Math.Max(1, attack.Power - targetDefense);
-
-        targetHealth.Current = Math.Max(0, targetHealth.Current - damage);
-        attack.LastAttackTime = currentTime;
-
-        ref var attackerEntityId = ref entity.Get<EntityIdComponent>();
-        Log.Debug("Auto-attack: {Attacker} → {Target}, Dmg={Damage}, HP={Current}/{Max}",
-            attackerEntityId.EntityId, combat.TargetEntityId, damage, targetHealth.Current, targetHealth.Max);
-
-        _onAttack?.Invoke(attackerEntityId.EntityId, combat.TargetEntityId);
-        _onDamage?.Invoke(combat.TargetEntityId, damage, targetHealth.Current, targetHealth.Max);
-
-        if (targetHealth.IsDead)
-        {
-            combat.InCombat = false;
-            combat.TargetEntityId = 0;
-            _onDeath?.Invoke(targetEntity.Value, entity);
-        }
-    }
-
-    public override void Dispose()
-    {
-        _targetableEntities.Dispose();
-        base.Dispose();
     }
 }

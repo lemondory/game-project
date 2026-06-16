@@ -1,7 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using DefaultEcs;
-using DefaultEcs.System;
+using Arch.Core;
+using Arch.Core.Extensions;
+using Arch.System;
 using GameServer.Game;
 using GameServer.Game.Components;
 using GameServer.Game.Systems;
@@ -22,14 +23,14 @@ public abstract class Zone
 {
     public int ZoneId { get; }
     public ZoneType ZoneType { get; }
-    protected World         World         { get; }
-    protected ISystem<float> Systems      { get; }
-    protected AoiGrid        AoiGrid      { get; } = new AoiGrid();
+    protected World          World         { get; }
+    protected ISystem<float> Systems       { get; }
+    protected AoiGrid        AoiGrid       { get; } = new AoiGrid();
     protected SubscriberMap  SubscriberMap { get; } = new SubscriberMap();
 
     private readonly Thread _gameThread;
     private volatile bool _isRunning;
-    private const float TickRate      = 20f;           // 20 Hz
+    private const float TickRate       = 20f;
     private const float FixedDeltaTime = 1f / TickRate; // 50ms
 
     // 네트워크 스레드에서 받은 엔티티 변경 작업을 게임루프 스레드에서 안전하게 처리
@@ -38,26 +39,33 @@ public abstract class Zone
     /// <summary>게임루프 스레드에서 실행될 액션을 큐에 추가한다</summary>
     protected void EnqueueAction(Action action) => _pendingActions.Enqueue(action);
 
-    // ── 성능 메트릭 ──────────────────────────────────────────────────────────
-    // 내부 카운터 — 게임루프 단일 스레드 전용이므로 lock 불필요
-    public static long TotalMovePacketsSent;      // BroadcastSystem/AoiSystem에서 직접 증가
+    /// <summary>
+    /// 입장 시 초기 NearbyEntities를 pre-populate할 때 SubscriberMap 구독을 함께 설정한다.
+    /// </summary>
+    public void SubscribeInitialEntities(ISession session, IEnumerable<long> entityIds)
+    {
+        foreach (var entityId in entityIds)
+            SubscriberMap.Subscribe(entityId, session);
+    }
 
-    private readonly EntitySet _entityCountSet;   // With<EntityIdComponent> — 항상 최신 유지
-    private const    int       MetricIntervalTicks = 100; // 100틱 = 5초 (20 Hz)
-    private          int       _metricTickCount;
-    private          long      _metricTotalMs;
-    private          long      _metricMaxMs;
+    // ── 성능 메트릭 ──────────────────────────────────────────────────────────
+    public static long TotalMovePacketsSent;
+
+    private readonly QueryDescription _entityCountQuery = new QueryDescription().WithAll<EntityIdComponent>();
+    private const    int              MetricIntervalTicks = 100; // 100틱 = 5초
+    private          int              _metricTickCount;
+    private          long             _metricTotalMs;
+    private          long             _metricMaxMs;
+
+    // Handle 이동 시 엔티티 탐색용 공통 쿼리
+    private readonly QueryDescription _allEntitiesQuery = new QueryDescription().WithAll<EntityIdComponent>();
 
     protected Zone(int zoneId, ZoneType zoneType)
     {
         ZoneId   = zoneId;
         ZoneType = zoneType;
-        World    = new World();
-
-        // EntitySet은 World가 생성된 직후 바로 만들어야 한다 (CreateSystems 이전)
-        _entityCountSet = World.GetEntities().With<EntityIdComponent>().AsSet();
-
-        Systems = CreateSystems();
+        World    = World.Create();
+        Systems  = CreateSystems();
 
         _gameThread = new Thread(GameLoop)
         {
@@ -66,14 +74,9 @@ public abstract class Zone
         };
     }
 
-    /// <summary>
-    /// 존별 ECS 시스템 파이프라인을 구성한다.
-    /// 서브클래스에서 오버라이드하여 존 고유 시스템을 추가할 수 있다.
-    /// (예: DungeonZone → MonsterAISystem, CombatSystem 추가)
-    /// </summary>
     protected virtual ISystem<float> CreateSystems()
     {
-        return new SequentialSystem<float>(
+        return new Group<float>($"Zone-{ZoneId}",
             new MovementSystem(World),
             new AoiSystem(World, AoiGrid, SubscriberMap),
             new BroadcastSystem(World, SubscriberMap),
@@ -111,7 +114,6 @@ public abstract class Zone
             sw.Restart();
             try
             {
-                // 네트워크 스레드에서 큐잉된 액션들을 게임루프에서 순차 실행
                 while (_pendingActions.TryDequeue(out var action))
                 {
                     try { action(); }
@@ -127,7 +129,6 @@ public abstract class Zone
             }
             sw.Stop();
 
-            // ── 메트릭 누적 ────────────────────────────────────────────────
             long elapsedMs = sw.ElapsedMilliseconds;
             _metricTotalMs += elapsedMs;
             if (elapsedMs > _metricMaxMs) _metricMaxMs = elapsedMs;
@@ -141,77 +142,69 @@ public abstract class Zone
                 _metricMaxMs     = 0;
             }
 
-            // ── 틱 레이트 유지 ─────────────────────────────────────────────
             var totalElapsedMs = (int)(DateTime.UtcNow - currentTime).TotalMilliseconds;
             var sleepTime      = (int)(FixedDeltaTime * 1000) - totalElapsedMs;
-            if (sleepTime > 0)
-                Thread.Sleep(sleepTime);
+            if (sleepTime > 0) Thread.Sleep(sleepTime);
         }
     }
 
     private void LogMetrics()
     {
-        int    entities   = _entityCountSet.Count;
-        double avgMs      = _metricTotalMs / (double)_metricTickCount;
-        long   budget     = (long)(FixedDeltaTime * 1000); // 50ms
-        long   movePkts   = Interlocked.Read(ref TotalMovePacketsSent);
+        int    entities = World.CountEntities(in _entityCountQuery);
+        double avgMs    = _metricTotalMs / (double)_metricTickCount;
+        long   budget   = (long)(FixedDeltaTime * 1000);
+        long   movePkts = Interlocked.Read(ref TotalMovePacketsSent);
 
         Log.Information(
             "[Zone {ZoneId}/{ZoneType}] entities={Entities} | " +
             "tick avg={Avg:F1}ms max={Max}ms (budget {Budget}ms) | " +
             "S2C_Move total={MovePkts}",
             ZoneId, ZoneType, entities,
-            avgMs, _metricMaxMs, budget,
-            movePkts);
+            avgMs, _metricMaxMs, budget, movePkts);
     }
 
-    // ── 공용 핸들러 (Town/Dungeon 공통) ─────────────────────────────────────
+    // ── 공용 핸들러 ─────────────────────────────────────────────────────────────
 
-    /// <summary>엔티티의 이동 목적지를 설정한다. 게임루프 스레드에서 안전하게 실행된다.</summary>
     public void HandleMove(long entityId, Vector3 destination, float speed)
     {
         EnqueueAction(() =>
         {
-            foreach (var entity in _entityCountSet.GetEntities())
+            World.Query(in _allEntitiesQuery, (Entity entity, ref EntityIdComponent id) =>
             {
-                ref var id = ref entity.Get<EntityIdComponent>();
-                if (id.EntityId != entityId) continue;
+                if (id.EntityId != entityId) return;
 
-                entity.Set(new DestinationComponent(destination));
-                entity.Set(new VelocityComponent(speed, new Vector3()));
+                var dest = new DestinationComponent(destination);
+                var vel  = new VelocityComponent(speed, new Vector3());
+                if (entity.Has<DestinationComponent>()) entity.Set(dest); else entity.Add(dest);
+                if (entity.Has<VelocityComponent>())    entity.Set(vel);  else entity.Add(vel);
+
                 Log.Debug("엔티티 이동: EntityId={EntityId}, 목적지=({X},{Y},{Z})",
                     entityId, destination.X, destination.Y, destination.Z);
-                break;
-            }
+            });
         });
     }
 
-    /// <summary>채팅 메시지를 존 내 모든 플레이어에게 브로드캐스트한다.</summary>
     public void HandleChat(long entityId, string message)
     {
         EnqueueAction(() =>
         {
-            // 발신자 이름 찾기
             string senderName = string.Empty;
-            foreach (var entity in _entityCountSet.GetEntities())
+            World.Query(in _allEntitiesQuery, (Entity entity, ref EntityIdComponent id) =>
             {
-                ref var id = ref entity.Get<EntityIdComponent>();
-                if (id.EntityId != entityId) continue;
+                if (id.EntityId != entityId) return;
                 if (entity.Has<PlayerComponent>())
                     senderName = entity.Get<PlayerComponent>().Name;
-                break;
-            }
+            });
 
             if (string.IsNullOrEmpty(senderName)) return;
 
-            var packet = new S2C_Chat { SenderName = senderName, Message = message };
-            foreach (var entity in _entityCountSet.GetEntities())
+            var packet      = new S2C_Chat { SenderName = senderName, Message = message };
+            var sessionQuery = new QueryDescription().WithAll<EntityIdComponent, SessionComponent>();
+            World.Query(in sessionQuery, (ref SessionComponent session) =>
             {
-                if (!entity.Has<SessionComponent>()) continue;
-                ref var session = ref entity.Get<SessionComponent>();
                 if (session.Session.IsConnected)
                     session.Session.Send(PacketId.S2C_Chat, packet);
-            }
+            });
 
             Log.Information("[Zone {ZoneId}] 채팅: [{PlayerName}] {Message}", ZoneId, senderName, message);
         });
@@ -222,8 +215,7 @@ public abstract class Zone
     public virtual void Dispose()
     {
         Stop();
-        _entityCountSet.Dispose();
         Systems.Dispose();
-        World.Dispose();
+        World.Destroy(World);
     }
 }

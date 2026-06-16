@@ -1,104 +1,84 @@
-using DefaultEcs;
-using DefaultEcs.System;
+using Arch.Core;
+using Arch.Core.Extensions;
+using Arch.System;
 using GameServer.Game.Components;
 using GameShared.Utils;
 
 namespace GameServer.Game.Systems;
 
-/// <summary>
-/// Handles entity movement towards destination
-/// </summary>
-public class MovementSystem : AEntitySetSystem<float>
+public class MovementSystem : BaseSystem<World, float>
 {
-    public MovementSystem(World world)
-        : base(world.GetEntities()
-            .With<PositionComponent>()
-            .With<VelocityComponent>()
-            .With<DestinationComponent>()
-            .AsSet())
+    private readonly QueryDescription _query = new QueryDescription()
+        .WithAll<PositionComponent, VelocityComponent, DestinationComponent>();
+
+    private readonly List<(Entity entity, bool arrived)> _processed = new();
+
+    public MovementSystem(World world) : base(world) { }
+
+    public override void Update(in float state)
     {
-    }
+        float deltaTime = state;
+        _processed.Clear();
 
-    protected override void Update(float deltaTime, in Entity entity)
-    {
-        // Guard: DefaultEcs swaps removed entities into processed slots during iteration.
-        // An entity that had its components removed earlier in the same frame may reappear
-        // at the end of the span — skip it to prevent IndexOutOfRangeException.
-        if (!entity.Has<VelocityComponent>() || !entity.Has<DestinationComponent>())
-            return;
-
-        ref var position = ref entity.Get<PositionComponent>();
-        ref var velocity = ref entity.Get<VelocityComponent>();
-        ref var destination = ref entity.Get<DestinationComponent>();
-
-        var current = position.Position;
-        var target = destination.Target;
-
-        // Calculate direction
-        var direction = new Vector3
+        World.Query(in _query, (Entity entity, ref PositionComponent position, ref VelocityComponent velocity, ref DestinationComponent destination) =>
         {
-            X = target.X - current.X,
-            Y = target.Y - current.Y,
-            Z = target.Z - current.Z
-        };
+            var current = position.Position;
+            var target  = destination.Target;
 
-        var distance = MathF.Sqrt(direction.X * direction.X + direction.Y * direction.Y + direction.Z * direction.Z);
-
-        // Check if arrived
-        if (distance <= destination.ArrivalThreshold)
-        {
-            // Arrived at destination
-            position.Position = target;
-            entity.Remove<DestinationComponent>();
-            entity.Remove<VelocityComponent>();
-
-            // Mark as dirty for broadcast
-            if (entity.Has<DirtyComponent>())
+            var direction = new Vector3
             {
-                ref var dirty = ref entity.Get<DirtyComponent>();
-                dirty.PositionChanged = true;
+                X = target.X - current.X,
+                Y = target.Y - current.Y,
+                Z = target.Z - current.Z
+            };
+
+            var distance = MathF.Sqrt(direction.X * direction.X + direction.Y * direction.Y + direction.Z * direction.Z);
+            bool arrived = false;
+
+            if (distance <= destination.ArrivalThreshold)
+            {
+                position.Position = target;
+                arrived = true;
             }
             else
             {
-                entity.Set(new DirtyComponent { PositionChanged = true });
+                direction.X /= distance;
+                direction.Y /= distance;
+                direction.Z /= distance;
+
+                var moveDistance = velocity.Speed * deltaTime;
+                if (moveDistance >= distance)
+                {
+                    position.Position = target;
+                    arrived = true;
+                }
+                else
+                {
+                    position.Position = new Vector3
+                    {
+                        X = current.X + direction.X * moveDistance,
+                        Y = current.Y + direction.Y * moveDistance,
+                        Z = current.Z + direction.Z * moveDistance
+                    };
+                }
             }
-            return;
-        }
 
-        // Normalize direction
-        direction.X /= distance;
-        direction.Y /= distance;
-        direction.Z /= distance;
+            _processed.Add((entity, arrived));
+        });
 
-        // Move towards target
-        var moveDistance = velocity.Speed * deltaTime;
-        if (moveDistance >= distance)
+        // Structural changes (Add/Remove) must be deferred until after the query
+        foreach (var (entity, arrived) in _processed)
         {
-            // Will arrive this frame
-            position.Position = target;
-            entity.Remove<DestinationComponent>();
-            entity.Remove<VelocityComponent>();
-        }
-        else
-        {
-            // Continue moving
-            position.Position = new Vector3
+            if (!entity.IsAlive()) continue;
+
+            if (arrived)
             {
-                X = current.X + direction.X * moveDistance,
-                Y = current.Y + direction.Y * moveDistance,
-                Z = current.Z + direction.Z * moveDistance
-            };
-        }
+                entity.Remove<DestinationComponent>();
+                entity.Remove<VelocityComponent>();
+            }
 
-        // Mark as dirty for broadcast
-        if (entity.Has<DirtyComponent>())
-        {
-            ref var dirty = ref entity.Get<DirtyComponent>();
+            ref var dirty = ref entity.AddOrGet<DirtyComponent>(default);
             dirty.PositionChanged = true;
-        }
-        else
-        {
-            entity.Set(new DirtyComponent { PositionChanged = true });
         }
     }
 }
