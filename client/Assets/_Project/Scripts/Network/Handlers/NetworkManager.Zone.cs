@@ -15,6 +15,12 @@ public partial class NetworkManager
     public event Action<S2C_EnterFieldResult>   OnEnterFieldReceived;
     public event Action                         OnLeaveFieldReceived;
     public event Action<S2C_FieldQuotaUpdate>   OnFieldQuotaUpdateReceived;
+    public event Action<S2C_RespawnResult>      OnRespawnResultReceived;
+
+    // 채집 오브젝트
+    public event Action<S2C_ObjectInfo>         OnObjectInfoReceived;
+    public event Action<S2C_ObjectState>        OnObjectStateReceived;
+    public event Action<S2C_InteractResult>     OnInteractResultReceived;
 
     public S2C_EnterFieldResult PendingEnterFieldResult { get; private set; }
 
@@ -112,6 +118,13 @@ public partial class NetworkManager
         OnFieldQuotaUpdateReceived?.Invoke(packet);
     }
 
+    [PacketHandler(PacketId.S2C_RespawnResult)]
+    private void OnRespawnResult(byte[] data)
+    {
+        var packet = S2C_RespawnResult.Parser.ParseFrom(data);
+        OnRespawnResultReceived?.Invoke(packet);
+    }
+
     public void SendEnterDungeon(int dungeonId)
     {
         Send(PacketId.C2S_EnterDungeon, new C2S_EnterDungeon { DungeonId = dungeonId });
@@ -130,5 +143,36 @@ public partial class NetworkManager
     public void SendLeaveField()
     {
         Send(PacketId.C2S_LeaveField, new C2S_LeaveField());
+    }
+
+    public void SendRespawn()
+    {
+        Send(PacketId.C2S_Respawn, new C2S_Respawn());
+    }
+
+    public void SendInteract(int targetObjectId)
+    {
+        Send(PacketId.C2S_Interact, new C2S_Interact { TargetObjectId = targetObjectId });
+    }
+
+    [PacketHandler(PacketId.S2C_ObjectInfo)]
+    private void OnObjectInfo(byte[] data)
+    {
+        var packet = S2C_ObjectInfo.Parser.ParseFrom(data);
+        OnObjectInfoReceived?.Invoke(packet);
+    }
+
+    [PacketHandler(PacketId.S2C_ObjectState)]
+    private void OnObjectState(byte[] data)
+    {
+        var packet = S2C_ObjectState.Parser.ParseFrom(data);
+        OnObjectStateReceived?.Invoke(packet);
+    }
+
+    [PacketHandler(PacketId.S2C_InteractResult)]
+    private void OnInteractResult(byte[] data)
+    {
+        var packet = S2C_InteractResult.Parser.ParseFrom(data);
+        OnInteractResultReceived?.Invoke(packet);
     }
 }

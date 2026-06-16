@@ -18,6 +18,7 @@ public class TownManager : MonoBehaviour
     public GameObject myPlayerPrefab;      // 내 플레이어 (PlayerController 포함)
     public GameObject otherPlayerPrefab;   // 다른 플레이어/NPC (EntityMover 포함)
     public GameObject dungeonPortalPrefab; // 던전 포탈 오브젝트
+    public GameObject fieldPortalPrefab;   // 시간제 사냥터 포탈 오브젝트
 
     [Header("카메라")]
     public CameraFollow cameraFollow;
@@ -101,6 +102,9 @@ public class TownManager : MonoBehaviour
                 case ObjectType.DungeonPortal:
                     SpawnDungeonPortal(obj, pos);
                     break;
+                case ObjectType.FieldPortal:
+                    SpawnFieldPortal(obj, pos);
+                    break;
                 // 추후: case ObjectType.Npc: / Shop: / QuestBoard: 등 확장
             }
         }
@@ -132,6 +136,34 @@ public class TownManager : MonoBehaviour
         }
 
         Debug.Log($"TownManager: Spawned portal '{dungeonData.Name}' at {pos}");
+    }
+
+    private void SpawnFieldPortal(MapObjectData obj, Vector3 pos)
+    {
+        if (fieldPortalPrefab == null)
+        {
+            Debug.LogWarning("TownManager: fieldPortalPrefab not assigned in Inspector");
+            return;
+        }
+
+        var fieldData = GameDataManager.TimeLimitedFieldData.GetById(obj.ReferenceId);
+        if (fieldData == null)
+        {
+            Debug.LogWarning($"TownManager: FieldId={obj.ReferenceId} not found in TimeLimitedFieldData");
+            return;
+        }
+
+        var go = Instantiate(fieldPortalPrefab, pos, Quaternion.identity);
+        go.name = $"FieldPortal_{fieldData.Name}";
+
+        var portal = go.GetComponent<FieldPortal>();
+        if (portal != null)
+        {
+            portal.FieldId   = fieldData.FieldId;
+            portal.FieldName = fieldData.Name;
+        }
+
+        Debug.Log($"TownManager: Spawned field portal '{fieldData.Name}' at {pos}");
     }
 
     // ── 패킷 핸들러 ─────────────────────────────────────────────────────────

@@ -2,30 +2,29 @@ using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
 using GameShared.Generated.Data;
-using GameShared.Proto;
 
 /// <summary>
-/// 던전 입장 팝업 UI.
+/// 시간제 사냥터 입장 팝업 UI.
 /// - [E] 프롬프트 (포탈 근처에 있을 때)
-/// - 던전 정보 (이름, 최소레벨, 최대인원, 설명)
+/// - 필드 정보 (이름, 일일/주간 제한 시간, 설명)
 /// - 입장 / 취소 버튼
 /// </summary>
-public class DungeonEntryPopup : MonoBehaviour
+public class FieldEntryPopup : MonoBehaviour
 {
-    public static DungeonEntryPopup Instance { get; private set; }
+    public static FieldEntryPopup Instance { get; private set; }
 
     [Header("프롬프트")]
-    public GameObject promptPanel;          // "[E] 던전 입장" 패널
+    public GameObject promptPanel;
     public TMP_Text promptText;
 
     [Header("팝업")]
     public GameObject popupPanel;
-    public TMP_Text dungeonNameText;
-    public TMP_Text dungeonInfoText;        // 최소레벨, 최대인원, 설명
+    public TMP_Text fieldNameText;
+    public TMP_Text fieldInfoText;    // 설명 + 일일/주간 제한
     public Button enterButton;
     public Button cancelButton;
 
-    private DungeonData _currentDungeon;
+    private TimeLimitedFieldData _currentField;
 
     void Awake()
     {
@@ -43,41 +42,41 @@ public class DungeonEntryPopup : MonoBehaviour
 
     // ── 프롬프트 ─────────────────────────────────────────────────────────────
 
-    public void ShowPrompt(bool show, string dungeonName)
+    public void ShowPrompt(bool show, string fieldName)
     {
         if (promptPanel == null) return;
         promptPanel.SetActive(show);
         if (show && promptText != null)
-            promptText.text = $"[E] {dungeonName} 입장";
+            promptText.text = $"[E] {fieldName} 입장";
         if (!show)
             popupPanel.SetActive(false);
     }
 
     // ── 팝업 ─────────────────────────────────────────────────────────────────
 
-    public void Open(DungeonData data)
+    public void Open(TimeLimitedFieldData data)
     {
         if (data == null) return;
-        _currentDungeon = data;
+        _currentField = data;
 
-        dungeonNameText.text = data.Name;
-        dungeonInfoText.text =
-            $"최소 레벨: {data.MinLevel}\n" +
-            $"최대 인원: {data.MaxPlayers}인\n\n" +
-            data.Description;
+        fieldNameText.text = data.Name;
+        fieldInfoText.text =
+            $"{data.Description}\n\n" +
+            $"일일 제한: {data.DailyLimitMinutes}분\n" +
+            $"주간 제한: {data.WeeklyLimitMinutes}분";
 
         popupPanel.SetActive(true);
     }
 
     private void OnEnterClicked()
     {
-        if (_currentDungeon == null) return;
+        if (_currentField == null) return;
         popupPanel.SetActive(false);
         ShowPrompt(false, string.Empty);
         UnityEngine.EventSystems.EventSystem.current?.SetSelectedGameObject(null);
 
-        NetworkManager.Instance.SendEnterDungeon(_currentDungeon.DungeonId);
-        Debug.Log($"[DungeonEntryPopup] Entering dungeon {_currentDungeon.DungeonId}: {_currentDungeon.Name}");
+        NetworkManager.Instance.SendEnterField(_currentField.FieldId);
+        Debug.Log($"[FieldEntryPopup] Entering field {_currentField.FieldId}: {_currentField.Name}");
     }
 
     private void OnCancelClicked()

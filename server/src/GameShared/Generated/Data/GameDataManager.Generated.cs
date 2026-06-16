@@ -45,6 +45,8 @@ public sealed class GameDataManager : DataManagerBase
     private SkillDataTable _skillData = new();
     private StringsTable _strings = new();
     private TimeLimitedFieldDataTable _timeLimitedFieldData = new();
+    private WorldObjectDataTable _worldObjectData = new();
+    private WorldObjectLayoutTable _worldObjectLayout = new();
 
     /// <summary>Access to CharacterClassData</summary>
     public static CharacterClassDataTable CharacterClassData => Instance._characterClassData;
@@ -70,6 +72,12 @@ public sealed class GameDataManager : DataManagerBase
     /// <summary>Access to TimeLimitedFieldData</summary>
     public static TimeLimitedFieldDataTable TimeLimitedFieldData => Instance._timeLimitedFieldData;
 
+    /// <summary>Access to WorldObjectData</summary>
+    public static WorldObjectDataTable WorldObjectData => Instance._worldObjectData;
+
+    /// <summary>Access to WorldObjectLayout</summary>
+    public static WorldObjectLayoutTable WorldObjectLayout => Instance._worldObjectLayout;
+
     protected override void LoadAllTables()
     {
         _characterClassData = LoadTable<CharacterClassDataTable>("CharacterClassData.bytes");
@@ -80,6 +88,8 @@ public sealed class GameDataManager : DataManagerBase
         _skillData = LoadTable<SkillDataTable>("SkillData.bytes");
         _strings = LoadTable<StringsTable>("Strings.bytes");
         _timeLimitedFieldData = LoadTable<TimeLimitedFieldDataTable>("TimeLimitedFieldData.bytes");
+        _worldObjectData = LoadTable<WorldObjectDataTable>("WorldObjectData.bytes");
+        _worldObjectLayout = LoadTable<WorldObjectLayoutTable>("WorldObjectLayout.bytes");
     }
 
     protected override void ClearAllTables()
@@ -92,5 +102,7 @@ public sealed class GameDataManager : DataManagerBase
         _skillData = new SkillDataTable();
         _strings = new StringsTable();
         _timeLimitedFieldData = new TimeLimitedFieldDataTable();
+        _worldObjectData = new WorldObjectDataTable();
+        _worldObjectLayout = new WorldObjectLayoutTable();
     }
 }

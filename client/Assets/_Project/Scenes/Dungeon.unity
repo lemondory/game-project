@@ -485,7 +485,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &499905916
 RectTransform:
   m_ObjectHideFlags: 0
@@ -581,14 +581,14 @@ MonoBehaviour:
   levelText: {fileID: 898203495}
   expText: {fileID: 343972477}
   goldText: {fileID: 930042863}
-  timerText: {fileID: 0}
-  killCountText: {fileID: 0}
+  timerText: {fileID: 1402473073}
+  killCountText: {fileID: 377721659}
   combatLogText: {fileID: 1090471326}
   deathPanel: {fileID: 933315407}
   returnToTownButton: {fileID: 2018163488}
-  resultPanel: {fileID: 0}
-  resultTitleText: {fileID: 0}
-  resultDetailText: {fileID: 0}
+  resultPanel: {fileID: 1358799964}
+  resultTitleText: {fileID: 1033230408}
+  resultDetailText: {fileID: 1194352069}
 --- !u!114 &747837767
 MonoBehaviour:
   m_ObjectHideFlags: 0

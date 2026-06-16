@@ -23,6 +23,14 @@ public enum PacketId : ushort
     C2S_LeaveField       = 1202,
     S2C_LeaveField       = 1203,
     S2C_FieldQuotaUpdate = 1204,
+    C2S_Respawn          = 1205,
+    S2C_RespawnResult    = 1206,
+
+    // World Objects
+    C2S_Interact         = 1300,
+    S2C_InteractResult   = 1301,
+    S2C_ObjectInfo       = 1302,
+    S2C_ObjectState      = 1303,
 
     // Movement
     C2S_Move = 2000,

@@ -29,8 +29,9 @@ public class PlayerController : MonoBehaviour
         if (DungeonManager.Instance != null && DungeonManager.Instance.IsDead) return;
         if (FieldManager.Instance   != null && FieldManager.Instance.IsDead)   return;
 
-        // UI 입력 필드에 포커스 중이면 입력 무시
-        if (EventSystem.current != null && EventSystem.current.currentSelectedGameObject != null)
+        // 텍스트 입력 필드에 포커스 중일 때만 입력 무시 (버튼 selected 상태는 무시)
+        var selected = EventSystem.current?.currentSelectedGameObject;
+        if (selected != null && selected.GetComponent<TMPro.TMP_InputField>() != null)
             return;
 
         HandleMovement();

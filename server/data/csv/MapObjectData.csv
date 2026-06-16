@@ -2,3 +2,5 @@
 1,1,DungeonPortal,1,10,0,5,Portal/DungeonPortal_Green,슬라임 숲 던전 포탈
 2,1,DungeonPortal,2,-10,0,5,Portal/DungeonPortal_Blue,고블린 동굴 던전 포탈
 3,1,DungeonPortal,3,0,0,15,Portal/DungeonPortal_Red,오크 요새 던전 포탈
+4,1,FieldPortal,1,20,0,0,Portal/FieldPortal_Gold,슬라임 평원 입구
+5,1,FieldPortal,2,20,0,-10,Portal/FieldPortal_Gold,고블린 습지 입구

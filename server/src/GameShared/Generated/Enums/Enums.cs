@@ -128,9 +128,13 @@ public enum ObjectType
     Shop = 2,
     /// <summary>퀘스트 게시판</summary>
     QuestBoard = 3,
+    /// <summary>시간제 사냥터 포탈</summary>
+    FieldPortal = 4,
+    /// <summary>채집 오브젝트</summary>
+    Collectible = 5,
 
     /// <summary>최대값 (for loop 용)</summary>
-    Max = 4
+    Max = 6
 }
 
 /// <summary>
@@ -143,9 +147,28 @@ public enum DungeonType
 
     /// <summary>몬스터 전멸 클리어</summary>
     KillAll = 0,
-    /// <summary>제한시간 클리어</summary>
+    /// <summary>제한시간 생존 클리어</summary>
     Timed = 1,
 
     /// <summary>최대값 (for loop 용)</summary>
     Max = 2
+}
+
+/// <summary>
+/// Auto-generated enum from enums.xlsx
+/// </summary>
+public enum WorldObjectState
+{
+    /// <summary>사용 안함</summary>
+    None = -1,
+
+    /// <summary>채집 가능</summary>
+    Available = 0,
+    /// <summary>채집됨 (사라짐)</summary>
+    Harvested = 1,
+    /// <summary>리스폰 대기 중</summary>
+    Respawning = 2,
+
+    /// <summary>최대값 (for loop 용)</summary>
+    Max = 3
 }

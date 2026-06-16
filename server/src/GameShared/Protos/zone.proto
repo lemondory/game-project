@@ -77,3 +77,47 @@ message S2C_FieldQuotaUpdate {
   int32 daily_remaining_seconds  = 1;  // 남은 일일 시간(초) — 1분마다 전송
   int32 weekly_remaining_seconds = 2;
 }
+
+message C2S_Respawn {
+  // 현재 존에서 입구로 부활 요청
+}
+
+message S2C_RespawnResult {
+  bool success  = 1;
+  Vec3 position = 2;  // 부활 위치 (입구)
+  int32 current_hp = 3;
+  int32 max_hp     = 4;
+}
+
+// 채집 오브젝트 패킷
+
+message ObjectReward {
+  int32 item_id    = 1;
+  int32 item_count = 2;
+  int32 exp_reward = 3;
+}
+
+message S2C_ObjectInfo {
+  int32  object_id                = 1;  // 런타임 고유 ID (ZoneManager 내 순번)
+  int32  data_id                  = 2;  // WorldObjectData.ObjectId
+  Vec3   position                 = 3;
+  int32  state                    = 4;  // WorldObjectState (0=Available, 1=Harvested, 2=Respawning)
+  int32  respawn_remaining_seconds = 5; // Harvested/Respawning 상태일 때 남은 시간
+}
+
+message S2C_ObjectState {
+  int32 object_id                = 1;
+  int32 state                    = 2;
+  int32 respawn_remaining_seconds = 3;
+}
+
+message C2S_Interact {
+  int32 target_object_id = 1;
+}
+
+message S2C_InteractResult {
+  int32         object_id = 1;
+  bool          success   = 2;
+  string        message   = 3;
+  ObjectReward  reward    = 4;
+}

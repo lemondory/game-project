@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using GameShared.Proto;
 using System.Collections.Generic;
+using System.Linq;
 
 /// <summary>
 /// Field 씬의 엔티티를 관리하는 싱글톤.
@@ -27,6 +28,9 @@ public class FieldManager : MonoBehaviour
     private readonly Dictionary<long, GameObject> _entities = new();
     private readonly HashSet<long> _monsterEntityIds = new();
 
+    // 채집 오브젝트 추적
+    private readonly Dictionary<int, FieldCollectible> _collectibles = new();
+
     public long MyEntityId { get; private set; }
     public bool IsDead     { get; private set; }
 
@@ -46,15 +50,19 @@ public class FieldManager : MonoBehaviour
 
         Initialize(data);
 
-        NetworkManager.Instance.OnSpawnReceived           += OnSpawn;
-        NetworkManager.Instance.OnDespawnReceived         += OnDespawn;
-        NetworkManager.Instance.OnMoveReceived            += OnMove;
-        NetworkManager.Instance.OnDamageReceived          += OnDamage;
-        NetworkManager.Instance.OnDeathReceived           += OnDeath;
-        NetworkManager.Instance.OnRewardReceived          += OnReward;
-        NetworkManager.Instance.OnLevelUpReceived         += OnLevelUp;
-        NetworkManager.Instance.OnLeaveFieldReceived      += OnLeaveField;
+        NetworkManager.Instance.OnSpawnReceived            += OnSpawn;
+        NetworkManager.Instance.OnDespawnReceived          += OnDespawn;
+        NetworkManager.Instance.OnMoveReceived             += OnMove;
+        NetworkManager.Instance.OnDamageReceived           += OnDamage;
+        NetworkManager.Instance.OnDeathReceived            += OnDeath;
+        NetworkManager.Instance.OnRewardReceived           += OnReward;
+        NetworkManager.Instance.OnLevelUpReceived          += OnLevelUp;
+        NetworkManager.Instance.OnLeaveFieldReceived       += OnLeaveField;
         NetworkManager.Instance.OnFieldQuotaUpdateReceived += OnFieldQuotaUpdate;
+        NetworkManager.Instance.OnRespawnResultReceived    += OnRespawnResult;
+        NetworkManager.Instance.OnObjectInfoReceived       += OnObjectInfo;
+        NetworkManager.Instance.OnObjectStateReceived      += OnObjectState;
+        NetworkManager.Instance.OnInteractResultReceived   += OnInteractResult;
     }
 
     void Update()
@@ -66,15 +74,19 @@ public class FieldManager : MonoBehaviour
     void OnDestroy()
     {
         if (NetworkManager.Instance == null) return;
-        NetworkManager.Instance.OnSpawnReceived           -= OnSpawn;
-        NetworkManager.Instance.OnDespawnReceived         -= OnDespawn;
-        NetworkManager.Instance.OnMoveReceived            -= OnMove;
-        NetworkManager.Instance.OnDamageReceived          -= OnDamage;
-        NetworkManager.Instance.OnDeathReceived           -= OnDeath;
-        NetworkManager.Instance.OnRewardReceived          -= OnReward;
-        NetworkManager.Instance.OnLevelUpReceived         -= OnLevelUp;
-        NetworkManager.Instance.OnLeaveFieldReceived      -= OnLeaveField;
+        NetworkManager.Instance.OnSpawnReceived            -= OnSpawn;
+        NetworkManager.Instance.OnDespawnReceived          -= OnDespawn;
+        NetworkManager.Instance.OnMoveReceived             -= OnMove;
+        NetworkManager.Instance.OnDamageReceived           -= OnDamage;
+        NetworkManager.Instance.OnDeathReceived            -= OnDeath;
+        NetworkManager.Instance.OnRewardReceived           -= OnReward;
+        NetworkManager.Instance.OnLevelUpReceived          -= OnLevelUp;
+        NetworkManager.Instance.OnLeaveFieldReceived       -= OnLeaveField;
         NetworkManager.Instance.OnFieldQuotaUpdateReceived -= OnFieldQuotaUpdate;
+        NetworkManager.Instance.OnRespawnResultReceived    -= OnRespawnResult;
+        NetworkManager.Instance.OnObjectInfoReceived       -= OnObjectInfo;
+        NetworkManager.Instance.OnObjectStateReceived      -= OnObjectState;
+        NetworkManager.Instance.OnInteractResultReceived   -= OnInteractResult;
     }
 
     // ── 초기화 ──────────────────────────────────────────────────────────────
@@ -189,10 +201,26 @@ public class FieldManager : MonoBehaviour
     private void OnLeaveField()
     {
         Debug.Log("[FieldManager] LeaveField received — returning to town");
+        fieldHUD?.StopQuota();
         if (LoadingScreen.Instance != null)
             LoadingScreen.Instance.LoadScene("Town");
         else
             UnityEngine.SceneManagement.SceneManager.LoadScene("Town");
+    }
+
+    private void OnRespawnResult(S2C_RespawnResult packet)
+    {
+        if (!packet.Success) return;
+
+        IsDead = false;
+        fieldHUD?.HideDeathPanel();
+
+        if (_entities.TryGetValue(MyEntityId, out var myObj))
+            myObj.transform.position = ToUnity(packet.Position);
+
+        fieldHUD?.SetHealth(packet.CurrentHp, packet.MaxHp);
+
+        Debug.Log($"[FieldManager] Respawned at entrance. HP={packet.CurrentHp}/{packet.MaxHp}");
     }
 
     private void OnFieldQuotaUpdate(S2C_FieldQuotaUpdate packet)
@@ -205,12 +233,71 @@ public class FieldManager : MonoBehaviour
             Debug.Log("[FieldManager] Quota exhausted — waiting for server eviction");
     }
 
-    // ── 퇴장 ────────────────────────────────────────────────────────────────
+    // ── 퇴장 / 부활 ─────────────────────────────────────────────────────────
 
     public void LeaveField()
     {
         NetworkManager.Instance.SendLeaveField();
         Debug.Log("[FieldManager] LeaveField requested");
+    }
+
+    public void RequestRespawn()
+    {
+        NetworkManager.Instance.SendRespawn();
+        Debug.Log("[FieldManager] Respawn requested");
+    }
+
+    public void RequestInteract(int objectId)
+    {
+        NetworkManager.Instance.SendInteract(objectId);
+    }
+
+    // ── WorldObject 핸들러 ───────────────────────────────────────────────────
+
+    private void OnObjectInfo(S2C_ObjectInfo packet)
+    {
+        if (_collectibles.TryGetValue(packet.ObjectId, out var existing))
+        {
+            existing.SetState(packet.State);
+            return;
+        }
+
+        // 프리미티브 구체로 채집 오브젝트 생성 (추후 prefab으로 교체)
+        var obj = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        obj.name = $"Collectible_{packet.ObjectId}";
+        obj.transform.position = new Vector3(packet.Position.X, packet.Position.Y + 0.5f, packet.Position.Z);
+        obj.transform.localScale = Vector3.one * 0.6f;
+
+        // 콜라이더 제거 (물리 충돌 불필요)
+        var col = obj.GetComponent<Collider>();
+        if (col != null) Destroy(col);
+
+        var collectible = obj.AddComponent<FieldCollectible>();
+        collectible.Initialize(packet.ObjectId, packet.State);
+
+        _collectibles[packet.ObjectId] = collectible;
+    }
+
+    private void OnObjectState(S2C_ObjectState packet)
+    {
+        if (_collectibles.TryGetValue(packet.ObjectId, out var collectible))
+            collectible.SetState(packet.State);
+    }
+
+    private void OnInteractResult(S2C_InteractResult packet)
+    {
+        if (!packet.Success)
+        {
+            Debug.Log($"[FieldManager] Interact failed: {packet.Message}");
+            return;
+        }
+
+        if (fieldHUD != null && packet.Reward != null)
+        {
+            fieldHUD.ShowReward(packet.Reward.ExpReward, 0);
+            // TODO: 인벤토리 시스템 연동 시 아이템 추가 처리
+            Debug.Log($"[FieldManager] Harvested: itemId={packet.Reward.ItemId} x{packet.Reward.ItemCount}, exp={packet.Reward.ExpReward}");
+        }
     }
 
     // ── 공격 타겟 ────────────────────────────────────────────────────────────

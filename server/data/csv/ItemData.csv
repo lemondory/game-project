@@ -2,3 +2,5 @@
 2001,Health Potion,Common,10,Restores 50 HP
 2002,Mana Potion,Common,15,Restores 30 MP
 2003,Magic Sword,Epic,1000,"ATK +50, Magic +20"
+3001,약초,Common,0,채집한 약초. 연금술 재료로 사용된다.
+3002,철광석,Common,0,채집한 철광석. 단조 재료로 사용된다.

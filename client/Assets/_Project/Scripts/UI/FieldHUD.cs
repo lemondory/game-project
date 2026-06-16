@@ -29,10 +29,16 @@ public class FieldHUD : MonoBehaviour
 
     [Header("사망 UI")]
     public GameObject deathPanel;
-    public Button returnToTownButton;
+    public Button respawnButton;       // 입구에서 부활
+    public Button returnToTownButton;  // 마을로 이동
 
     private float _combatLogTimer;
     private const float CombatLogDuration = 3f;
+
+    // 클라이언트 로컬 카운트다운 (서버 60초 브로드캐스트 사이 실시간 갱신용)
+    private float _dailyRemainingSeconds;
+    private float _weeklyRemainingSeconds;
+    private bool  _quotaActive;
 
     void Awake()
     {
@@ -43,6 +49,8 @@ public class FieldHUD : MonoBehaviour
     {
         if (deathPanel != null) deathPanel.SetActive(false);
 
+        if (respawnButton != null)
+            respawnButton.onClick.AddListener(OnRespawnClicked);
         if (returnToTownButton != null)
             returnToTownButton.onClick.AddListener(OnReturnToTownClicked);
     }
@@ -54,6 +62,13 @@ public class FieldHUD : MonoBehaviour
             _combatLogTimer -= Time.deltaTime;
             if (_combatLogTimer <= 0f && combatLogText != null)
                 combatLogText.text = string.Empty;
+        }
+
+        if (_quotaActive)
+        {
+            _dailyRemainingSeconds  = Mathf.Max(0f, _dailyRemainingSeconds  - Time.deltaTime);
+            _weeklyRemainingSeconds = Mathf.Max(0f, _weeklyRemainingSeconds - Time.deltaTime);
+            RefreshQuotaText();
         }
     }
 
@@ -86,23 +101,36 @@ public class FieldHUD : MonoBehaviour
 
     // ── 쿼터 ─────────────────────────────────────────────────────
 
-    /// <summary>서버에서 60초마다 수신되는 쿼터 업데이트 + 입장 시 초기값.</summary>
+    /// <summary>서버에서 수신한 값으로 동기화 (입장 시 초기값 + 60초마다 서버 보정).</summary>
     public void UpdateQuota(int dailyRemainingSeconds, int weeklyRemainingSeconds)
+    {
+        _dailyRemainingSeconds  = dailyRemainingSeconds;
+        _weeklyRemainingSeconds = weeklyRemainingSeconds;
+        _quotaActive = true;
+        RefreshQuotaText();
+    }
+
+    public void StopQuota()
+    {
+        _quotaActive = false;
+    }
+
+    private void RefreshQuotaText()
     {
         if (dailyQuotaText != null)
         {
-            int m = dailyRemainingSeconds / 60;
-            int s = dailyRemainingSeconds % 60;
+            int m = (int)_dailyRemainingSeconds / 60;
+            int s = (int)_dailyRemainingSeconds % 60;
             dailyQuotaText.text  = $"오늘 {m:D2}:{s:D2}";
-            dailyQuotaText.color = dailyRemainingSeconds <= 300 ? Color.red : Color.white;
+            dailyQuotaText.color = _dailyRemainingSeconds <= 300f ? Color.red : Color.white;
         }
 
         if (weeklyQuotaText != null)
         {
-            int m = weeklyRemainingSeconds / 60;
-            int s = weeklyRemainingSeconds % 60;
+            int m = (int)_weeklyRemainingSeconds / 60;
+            int s = (int)_weeklyRemainingSeconds % 60;
             weeklyQuotaText.text  = $"이번 주 {m:D2}:{s:D2}";
-            weeklyQuotaText.color = weeklyRemainingSeconds <= 600 ? Color.yellow : Color.white;
+            weeklyQuotaText.color = _weeklyRemainingSeconds <= 600f ? Color.yellow : Color.white;
         }
     }
 
@@ -130,10 +158,25 @@ public class FieldHUD : MonoBehaviour
         if (deathPanel != null) deathPanel.SetActive(true);
     }
 
+    public void HideDeathPanel()
+    {
+        if (combatLogText != null) combatLogText.text = string.Empty;
+        _combatLogTimer = 0f;
+        if (deathPanel != null) deathPanel.SetActive(false);
+    }
+
     // ── 버튼 ─────────────────────────────────────────────────────
+
+    private void OnRespawnClicked()
+    {
+        HideDeathPanel();
+        if (FieldManager.Instance != null)
+            FieldManager.Instance.RequestRespawn();
+    }
 
     private void OnReturnToTownClicked()
     {
+        HideDeathPanel();
         if (FieldManager.Instance != null)
             FieldManager.Instance.LeaveField();
     }
